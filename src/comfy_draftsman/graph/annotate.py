@@ -250,7 +250,10 @@ def annotate(
         text = _note_text(key, wf, object_info, guidance, members)
         if text:
             note_w = max(min(w_, 380.0), 300.0)
-            note_h = 26.0 * (text.count("\n") + 1) + 40.0
+            # frontend renders markdown at ~17px/line; blank separator lines
+            # collapse, headings add a little
+            rendered_lines = sum(1 for line in text.splitlines() if line.strip())
+            note_h = 17.0 * rendered_lines + 70.0
             note = wf.add_node("MarkdownNote", title=title)
             note.widgets_values = [text]
             note.size = [note_w, note_h]

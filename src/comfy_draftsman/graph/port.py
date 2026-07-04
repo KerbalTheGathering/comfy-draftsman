@@ -66,12 +66,17 @@ def _set_if_valid(
     changes.append(f"{node.type} #{node_id}: {name} {old!r} -> {value!r}")
 
 
+def _matching_files(choices: list[Any], patterns: list[str]) -> list[str]:
+    return [
+        str(choice)
+        for choice in choices
+        if any(p.lower() in str(choice).lower().replace("\\", "/") for p in patterns)
+    ]
+
+
 def _pick_file(choices: list[Any], patterns: list[str]) -> str | None:
-    for choice in choices:
-        name = str(choice).lower().replace("\\", "/")
-        if any(p.lower() in name for p in patterns):
-            return str(choice)
-    return None
+    matches = _matching_files(choices, patterns)
+    return matches[0] if matches else None
 
 
 def _retune_samplers(wf, guidance, object_info, changes) -> None:
@@ -145,9 +150,15 @@ def _swap_loader_topology(wf, guidance, object_info, changes, flags) -> None:
                 file_widget_patterns[widget_name] = patterns
             for widget_name, patterns in file_widget_patterns.items():
                 choices = _combo_choices(all_specs.get(widget_name, ["*"])) or []
-                picked = _pick_file(choices, patterns)
-                if picked:
-                    _set_if_valid(wf, new_node.id, widget_name, picked, object_info, changes)
+                matches = _matching_files(choices, patterns)
+                if matches:
+                    _set_if_valid(wf, new_node.id, widget_name, matches[0], object_info, changes)
+                    if len(matches) > 1:
+                        flags.append(
+                            f"{class_type}.{widget_name} (#{new_node.id}): picked "
+                            f"{matches[0]!r} from {len(matches)} candidates - review "
+                            f"alternatives: {matches[1:6]}"
+                        )
                 else:
                     flags.append(
                         f"no installed file matches {patterns} for {class_type}.{widget_name} "
