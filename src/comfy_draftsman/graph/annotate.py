@@ -134,8 +134,8 @@ def _paint_knobs(wf: Workflow, object_info: dict[str, Any], stage_of_key: dict[i
         slots = set(_safe_slots(node, object_info))
         is_knob = (
             node.type in _INPUT_CLASSES
-            or stage == "prompts"
-            and slots & {"text", "prompt", "wildcard_text"}
+            or (stage == "prompts"
+            and slots & {"text", "prompt", "wildcard_text"})
             or node.type in ("EmptyLatentImage", "EmptySD3LatentImage")
         )
         if is_knob:
@@ -187,8 +187,8 @@ def _note_text(
         if sampling and "cfg" in sampling:
             cfg = sampling["cfg"]
             lines.append(
-                f"Safe ranges: CFG {cfg.get('min')}–{cfg.get('max')}, "
-                f"steps {sampling.get('steps', {}).get('min')}–{sampling.get('steps', {}).get('max')}."
+                f"Safe ranges: CFG {cfg.get('min')}-{cfg.get('max')}, "
+                f"steps {sampling.get('steps', {}).get('min')}-{sampling.get('steps', {}).get('max')}."
             )
     elif stage == "post":
         for technique, settings in (g.get("techniques") or {}).items():

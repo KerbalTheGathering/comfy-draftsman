@@ -53,11 +53,10 @@ def lint(wf: Workflow, object_info: dict[str, Any]) -> list[dict[str, Any]]:
             findings.append(
                 _finding("orphan-node", f"{node.type} #{node.id} is connected to nothing", node.id)
             )
-        slots = set()
         try:
             slots = set(w.widget_slot_names(node.type, object_info))
         except (ValueError, KeyError):
-            pass
+            slots = set()
         if "text" in slots and node.title is None:
             findings.append(
                 _finding(

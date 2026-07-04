@@ -5,13 +5,13 @@ from pathlib import Path
 
 import pytest
 
+from comfy_draftsman.graph.model import Workflow
 from comfy_draftsman.knowledge import (
     detect_family,
     get_guidance,
     list_families,
     save_learning,
 )
-from comfy_draftsman.graph.model import Workflow
 
 FIXTURES = Path(__file__).parent / "fixtures"
 

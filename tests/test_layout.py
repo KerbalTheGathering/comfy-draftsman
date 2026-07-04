@@ -50,7 +50,7 @@ def _overlaps(a, b):
 
 
 def test_dataflow_goes_left_to_right(txt2img, object_info):
-    wf, ids = txt2img
+    wf, _ids = txt2img
     apply_layout(wf, object_info)
     for link in wf.links.values():
         origin = wf.nodes[link.origin_id]

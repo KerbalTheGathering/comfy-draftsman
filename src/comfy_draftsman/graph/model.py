@@ -411,8 +411,8 @@ class Workflow:
             "last_link_id": max(self.links, default=0),
             "nodes": nodes_out,
             "links": [
-                [l.id, l.origin_id, l.origin_slot, l.target_id, l.target_slot, l.type]
-                for l in sorted(self.links.values(), key=lambda x: x.id)
+                [ln.id, ln.origin_id, ln.origin_slot, ln.target_id, ln.target_slot, ln.type]
+                for ln in sorted(self.links.values(), key=lambda x: x.id)
             ],
             "groups": [
                 {
