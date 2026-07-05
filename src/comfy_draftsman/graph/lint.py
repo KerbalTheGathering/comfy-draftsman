@@ -9,9 +9,11 @@ from __future__ import annotations
 from typing import Any
 
 from . import widgets as w
-from .model import Workflow
+from .layout import is_text_display
+from .model import Node, Workflow
 
 NOTE_TYPES = {"Note", "MarkdownNote"}
+_PROMPT_WIDGETS = ("text", "prompt", "wildcard_text")
 
 
 def _finding(code: str, message: str, node_id: int | None = None) -> dict[str, Any]:
@@ -19,6 +21,67 @@ def _finding(code: str, message: str, node_id: int | None = None) -> dict[str, A
     if node_id is not None:
         finding["node_id"] = node_id
     return finding
+
+
+def _upstream_nodes(wf: Workflow, node: Node, slot_name: str, depth: int = 4) -> list[Node]:
+    """Nodes on the chain feeding an input slot (BFS upstream, bounded)."""
+    found: list[Node] = []
+    slot = node.input_by_name(slot_name)
+    if slot is None or slot.link is None or slot.link not in wf.links:
+        return found
+    frontier = [wf.links[slot.link].origin_id]
+    visited: set[int] = set()
+    for _ in range(depth):
+        next_frontier: list[int] = []
+        for nid in frontier:
+            if nid in visited or nid not in wf.nodes:
+                continue
+            visited.add(nid)
+            upstream = wf.nodes[nid]
+            found.append(upstream)
+            for inp in upstream.inputs:
+                if inp.link is not None and inp.link in wf.links:
+                    next_frontier.append(wf.links[inp.link].origin_id)
+        frontier = next_frontier
+    return found
+
+
+def _missing_prompt_previews(
+    wf: Workflow, object_info: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """A positive prompt built upstream (wildcards, concatenators) is invisible
+    to the user unless a Show Text-style node displays the final string."""
+    from .annotate import _prompt_role
+
+    findings = []
+    for node in wf.nodes.values():
+        try:
+            slots = set(w.widget_slot_names(node.type, object_info))
+        except (ValueError, KeyError):
+            continue
+        if node.type != "CLIPTextEncode" and not (slots & set(_PROMPT_WIDGETS)):
+            continue
+        wired = [
+            name
+            for name in _PROMPT_WIDGETS
+            if name in slots
+            and (slot := node.input_by_name(name)) is not None
+            and slot.link is not None
+        ]
+        if not wired or _prompt_role(wf, node) != "positive":
+            continue
+        chain = _upstream_nodes(wf, node, wired[0])
+        if not any(is_text_display(n.type) for n in chain):
+            findings.append(
+                _finding(
+                    "no-prompt-preview",
+                    f"{node.type} #{node.id}: the positive prompt is generated "
+                    "upstream, so the user never sees the final text - insert a "
+                    "Show Text node (e.g. ShowText|pys) inline before this encoder",
+                    node.id,
+                )
+            )
+    return findings
 
 
 def lint(wf: Workflow, object_info: dict[str, Any]) -> list[dict[str, Any]]:
@@ -65,6 +128,8 @@ def lint(wf: Workflow, object_info: dict[str, Any]) -> list[dict[str, Any]]:
                     node.id,
                 )
             )
+
+    findings.extend(_missing_prompt_previews(wf, object_info))
 
     # overlapping nodes make workflows unreadable
     boxes = [

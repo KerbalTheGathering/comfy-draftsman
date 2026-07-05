@@ -50,6 +50,9 @@ mcp = FastMCP(
         "get_model_guidance returns tuned settings per model family; when you research "
         "better settings online, persist them with record_learning (include a 'detect' "
         "block for brand-new families so they're recognized next session). "
+        "When a positive prompt is GENERATED upstream (wildcards, concatenators) "
+        "instead of hand-typed, wire it through a Show Text node before the encoder "
+        "so the user can see the final prompt (lint flags this as no-prompt-preview). "
         "When modernizing a workflow, if some nodes have no core/installed equivalent, "
         "tell the user exactly what capability would be LOST before they choose "
         "'core nodes only' vs installing a pack - don't drop features silently."
@@ -594,6 +597,9 @@ Follow this sequence with the comfy-draftsman tools:
 4. Wire with edit_workflow; check unfamiliar nodes via get_node_info first. If a
    needed capability is missing (e.g. FaceDetailer, wildcards), use
    resolve_missing_nodes / search_node_packs and ask the user before installing.
+   If the positive prompt is generated (wildcards/concatenators) rather than
+   hand-typed, route it through a Show Text node into the encoder so the user
+   sees the final prompt text.
 5. validate_workflow until ok; fix with edit_workflow.
 6. run_workflow - actually render; inspect the preview. Iterate if wrong.
 7. organize_workflow - REQUIRED finishing step (layout, groups, notes, knobs).
