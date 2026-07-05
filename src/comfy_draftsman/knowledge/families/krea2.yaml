@@ -37,18 +37,20 @@ resolutions: ["1024x1024", "1328x1328", "1216x832", "832x1216"]
 notes:
   loaders: >-
     Krea-2 loads as three separate parts: the diffusion model (UNETLoader), a
-    Qwen3-VL text encoder (CLIPLoader with type=krea2 - not clip_l/t5xxl), and a
-    Qwen-image VAE (VAELoader). It is NOT a FLUX checkpoint; there is no
-    DualCLIPLoader and no FluxGuidance node.
+    Qwen3-VL text encoder (CLIPLoader with type=krea2), and a Qwen-image VAE
+    (VAELoader). Swap any of these to change models independently.
   conditioning: >-
     The turbo variant runs at CFG 1.0, so a text negative prompt does nothing -
     the negative is produced by feeding the positive conditioning through a
     ConditioningZeroOut node. Write your description in the positive prompt;
     Krea-2 handles long natural-language prompts well.
   sampling: >-
-    Turbo reference: 8 steps, CFG 1.0, euler/simple, denoise 1.0. This is a
-    distilled model - raising CFG above 1.0 degrades it. Increase steps only
-    slightly (to ~12) if you want a touch more detail.
+    Turbo reference: 8 steps, CFG 1.0, euler/simple, denoise 1.0.
+    Also known to work well: euler/beta, euler/beta57, er_sde/beta,
+    er_sde/beta57. Research your specific weights for the best combo
+    and record_learning what you find. This is a distilled model —
+    raising CFG above 1.0 degrades it. Increase steps only slightly
+    (to ~12) if you want a touch more detail.
 research: >-
   Floor first written July 2026 from the official ComfyUI Krea-2 turbo template
   and a live port. Krea-2 is new and iterating - confirm the exact recommended

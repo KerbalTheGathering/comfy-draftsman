@@ -125,3 +125,21 @@ def test_learning_for_new_family_creates_entry(tmp_path):
     g = get_guidance("brand_new_model", learned_dir=tmp_path)
     assert g["sampling"]["cfg"]["default"] == 2.0
     assert "brand_new_model" in list_families(learned_dir=tmp_path)
+
+
+# --- krea2 notes: positive wording + alternative sampler combos ---
+
+
+def test_krea2_loaders_note_positive():
+    g = get_guidance("krea2")
+    loaders_note = g["notes"]["loaders"]
+    assert "UNETLoader" in loaders_note
+    assert "FLUX" not in loaders_note
+    assert "DualCLIPLoader" not in loaders_note
+
+
+def test_krea2_sampling_note_lists_alternatives():
+    g = get_guidance("krea2")
+    sampling_note = g["notes"]["sampling"]
+    assert "er_sde" in sampling_note
+    assert g["sampling"]["samplers"] == ["euler"]
