@@ -9,6 +9,8 @@ slots the frontend adds:
   whose schema options set ``control_after_generate: true``
 - an upload-button slot after inputs with ``image_upload: true``
 
+Usage: to set a KSampler's seed to randomize:
+``set_widget(node_id, "seed__control_after_generate", "randomize")``
 Connection-typed inputs (MODEL, CLIP, LATENT, ...) never consume a slot, but
 widget inputs that have been *converted to inputs* (connected) still do.
 """

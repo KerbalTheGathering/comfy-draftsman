@@ -87,6 +87,8 @@ def node_summary(object_info: dict[str, Any], class_type: str) -> dict[str, Any]
             for key in ("default", "min", "max", "tooltip", "control_after_generate"):
                 if key in opts:
                     entry[key] = opts[key]
+            if opts.get("control_after_generate"):
+                entry["control_slot"] = f"{name}__control_after_generate"
             inputs.append(entry)
     out_names = schema.get("output_name") or []
     outputs = [

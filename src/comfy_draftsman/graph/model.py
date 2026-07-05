@@ -395,9 +395,13 @@ class Workflow:
         node = self.nodes[node_id]
         slots = w.widget_slot_names(node.type, object_info)
         if input_name not in slots:
+            real_widgets = [s for s in slots if not s.endswith(w.SYNTHETIC_SUFFIXES)]
+            control_slots = [s for s in slots if s.endswith(w.CONTROL_SUFFIX)]
             raise ValueError(
-                f"{node.type} has no widget '{input_name}'; widgets: "
-                f"{[s for s in slots if not s.endswith(w.SYNTHETIC_SUFFIXES)]}"
+                f"{node.type} has no widget '{input_name}'.\n"
+                f"Widgets: {real_widgets}.\n"
+                f"Synthetic control slots: {control_slots}. "
+                f"Use 'seed__control_after_generate' to set randomize/fixed/increment/decrement."
             )
         if not isinstance(node.widgets_values, list):
             node.widgets_values[input_name] = value

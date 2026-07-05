@@ -237,3 +237,17 @@ def test_mode_mute_excluded_from_api(template, object_info):
     wf.nodes[19].mode = 2  # mute the SaveImage
     api = wf.to_api(object_info)
     assert str(19) not in api
+
+
+def test_set_widget_error_includes_synthetic_slots(object_info):
+    wf = Workflow.new()
+    sampler = wf.add_node("KSampler", object_info=object_info)
+    with pytest.raises(ValueError, match="seed__control_after_generate"):
+        wf.set_widget(sampler.id, "nonexistent_widget", 42, object_info)
+
+
+def test_set_widget_control_after_generate_succeeds(object_info):
+    wf = Workflow.new()
+    sampler = wf.add_node("KSampler", object_info=object_info)
+    wf.set_widget(sampler.id, "seed__control_after_generate", "randomize", object_info)
+    assert wf.get_widget(sampler.id, "seed__control_after_generate", object_info) == "randomize"
