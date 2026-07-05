@@ -12,6 +12,7 @@ from comfy_draftsman.comfy.client import ComfyClient
 from comfy_draftsman.config import Config
 from comfy_draftsman.graph.model import Workflow
 from comfy_draftsman.graph.validate import validate
+from comfy_draftsman.session import Session
 
 pytestmark = pytest.mark.integration
 
@@ -73,3 +74,55 @@ async def test_build_validate_run_real_render(live_client):
     assert result["status"] == "success", result
     images = result["outputs"]
     assert images and images[0]["filename"].startswith("draftsman_e2e")
+
+
+@pytest.fixture
+async def live_server(live_client, tmp_path, monkeypatch):
+    """server module wired to the live instance (tool functions called directly)."""
+    from comfy_draftsman import server
+
+    monkeypatch.setattr(
+        server._State, "config", Config(comfyui_url=LIVE_URL, session_dir=tmp_path, request_timeout=60)
+    )
+    monkeypatch.setattr(server._State, "client", live_client)
+    monkeypatch.setattr(server._State, "session", Session(tmp_path / "sessions"))
+    return server
+
+
+async def test_save_refuses_invalid_workflow(live_server):
+    """save_workflow must refuse a workflow whose model file does not exist."""
+    object_info = await live_server._client().get_object_info()
+    wf = Workflow.new()
+    ckpt = wf.add_node("CheckpointLoaderSimple", object_info=object_info)
+    ckpt.widgets_values = ["does-not-exist-draftsman-itest.safetensors"]
+    wf_id = live_server._session().create(wf, title="refusal test")
+
+    result = await live_server.save_workflow(wf_id, "draftsman-itest-refusal")
+    assert result["saved"] is False
+    codes = {f["code"] for f in result["findings"]}
+    assert "invalid-combo-value" in codes or "unconnected-input" in codes, result
+
+
+async def test_save_never_clobbers(live_server, live_client):
+    """Saving the same name twice must produce two distinct files."""
+    from urllib.parse import quote
+
+    wf = Workflow.new()  # empty workflow validates clean
+    session = live_server._session()
+    wf_id = session.create(wf, title="no-clobber test")
+
+    try:
+        first = await live_server.save_workflow(wf_id, "draftsman-itest-noclobber")
+        second = await live_server.save_workflow(wf_id, "draftsman-itest-noclobber")
+        assert first["saved"] is True and second["saved"] is True
+        assert first["saved_to_comfyui"] != second["saved_to_comfyui"], (first, second)
+        assert second["renamed_from"] == "draftsman-itest-noclobber"
+    finally:
+        # userdata persists across test runs - clean up so the draftsman
+        # suffix pool never exhausts on the test instance
+        for name in ("draftsman-itest-noclobber",) + tuple(
+            f"draftsman-itest-noclobber (draftsman{'' if i < 2 else f' {i}'})" for i in range(1, 21)
+        ):
+            await live_client._http.delete(
+                f"/api/userdata/{quote(f'workflows/{name}.json', safe='')}"
+            )
