@@ -7,6 +7,7 @@ process, created lazily.
 
 from __future__ import annotations
 
+import difflib
 import json
 from typing import Any, Literal
 
@@ -23,9 +24,10 @@ from .comfy.registry import RegistryClient
 from .config import Config, load_config
 from .graph.annotate import annotate
 from .graph.lint import lint
-from .graph.model import VIRTUAL_TYPES, Workflow
+from .graph.model import NOTE_TYPES, VIRTUAL_TYPES, Workflow
 from .graph.port import port_workflow as port_engine
 from .graph.validate import validate
+from .graph.widgets import widget_slot_names
 from .session import Session
 
 # Tool annotations let clients reason about safety and, where supported,
@@ -99,6 +101,16 @@ def _wf(workflow_id: str) -> Workflow:
     return _session().get(workflow_id)
 
 
+def _widget_preview(n) -> Any:
+    values = n.widgets_values if isinstance(n.widgets_values, list) else dict(n.widgets_values)
+    if n.type in VIRTUAL_TYPES and isinstance(values, list):
+        # note text can be long - truncate the preview, the content is intact
+        values = [
+            v[:120] + "…" if isinstance(v, str) and len(v) > 120 else v for v in values
+        ]
+    return values
+
+
 def _summary(workflow_id: str, wf: Workflow) -> dict[str, Any]:
     return {
         "workflow_id": workflow_id,
@@ -108,10 +120,12 @@ def _summary(workflow_id: str, wf: Workflow) -> dict[str, Any]:
                 "id": n.id,
                 "class_type": n.type,
                 "title": n.title,
-                "widgets": n.widgets_values if isinstance(n.widgets_values, list) else dict(n.widgets_values),
+                "widgets": _widget_preview(n),
+                # notes/reroutes/primitives are UI-only: kept in the graph and
+                # saved, but never sent to /prompt
+                **({"virtual": True} if n.type in VIRTUAL_TYPES else {}),
             }
             for n in sorted(wf.nodes.values(), key=lambda x: x.id)
-            if n.type not in VIRTUAL_TYPES
         ],
         "links": [
             f"#{ln.origin_id}[{ln.origin_slot}] -> #{ln.target_id}.{wf.nodes[ln.target_id].inputs[ln.target_slot].name}"
@@ -275,6 +289,46 @@ async def inspect_workflow(workflow_id: str) -> dict[str, Any]:
     return _summary(workflow_id, _wf(workflow_id))
 
 
+# edit_workflow op schemas: op -> (required keys, optional keys). Validated
+# up front so a malformed op fails with the schema spelled out instead of a
+# raw KeyError, and misspelled keys (widgets_values, node, ...) are rejected
+# instead of silently ignored.
+_OP_SPECS: dict[str, tuple[set[str], set[str]]] = {
+    "add_node": ({"class_type"}, {"title", "widgets"}),
+    "remove_node": ({"node_id"}, set()),
+    "connect": ({"from_node", "from_output", "to_node", "to_input"}, set()),
+    "set_widget": ({"node_id", "input", "value"}, set()),
+    "set_title": ({"node_id", "title"}, set()),
+    "set_mode": ({"node_id", "mode"}, set()),
+}
+
+
+def _check_op(index: int, op: dict[str, Any]) -> str:
+    """Validate one op against _OP_SPECS; returns the op kind or raises with
+    the exact schema of the failing op."""
+    kind = op.get("op")
+    if kind not in _OP_SPECS:
+        raise ValueError(
+            f"operation {index}: unknown op {kind!r}; valid ops: {sorted(_OP_SPECS)}"
+        )
+    required, optional = _OP_SPECS[kind]
+    allowed = required | optional | {"op"}
+    problems = []
+    missing = sorted(required - op.keys())
+    if missing:
+        problems.append(f"missing required key(s) {missing}")
+    for key in sorted(op.keys() - allowed):
+        close = difflib.get_close_matches(key, allowed, n=1)
+        hint = f" (did you mean {close[0]!r}?)" if close else ""
+        problems.append(f"unexpected key {key!r}{hint}")
+    if problems:
+        schema = f"'{kind}' requires {sorted(required)}"
+        if optional:
+            schema += f", optional {sorted(optional)}"
+        raise ValueError(f"operation {index} ({kind}): {'; '.join(problems)}. Schema: {schema}")
+    return kind
+
+
 @mcp.tool(annotations=_EDIT_LOCAL)
 async def edit_workflow(workflow_id: str, operations: list[dict[str, Any]]) -> dict[str, Any]:
     """Apply batched edits. Each op is a dict with 'op' plus:
@@ -286,22 +340,42 @@ async def edit_workflow(workflow_id: str, operations: list[dict[str, Any]]) -> d
     - {"op": "set_title", "node_id": int, "title": str}
     - {"op": "set_mode", "node_id": int, "mode": int}  # 0 normal, 2 mute, 4 bypass
 
-    Output slot names and widget names come from get_node_info. Ops apply in order;
-    a failing op stops the batch and reports what succeeded.
+    Output slot names and widget names come from get_node_info. Annotation nodes
+    (class_type "Note" or "MarkdownNote") are supported with a single widget
+    'text'. Ops apply in order; a failing op stops the batch, reports what
+    succeeded, and leaves the graph unchanged by the failing op.
     """
     wf = _wf(workflow_id)
     object_info = await _object_info()
     applied: list[str] = []
     try:
-        for op in operations:
-            kind = op.get("op")
+        for index, op in enumerate(operations):
+            kind = _check_op(index, op)
             if kind == "add_node":
-                node = wf.add_node(
-                    op["class_type"],
-                    object_info=object_info,
-                    title=op.get("title"),
-                )
-                for name, value in (op.get("widgets") or {}).items():
+                class_type = op["class_type"]
+                widgets = op.get("widgets") or {}
+                # validate class + widget names BEFORE touching the graph so a
+                # failed add leaves no half-built stub node behind
+                if class_type in NOTE_TYPES:
+                    if bad := sorted(set(widgets) - {"text"}):
+                        raise ValueError(
+                            f"{class_type} has a single widget 'text'; got {bad}"
+                        )
+                elif class_type not in object_info:
+                    raise ValueError(
+                        f"unknown node class {class_type!r} - not installed on this "
+                        "instance (search_nodes finds classes, resolve_missing_nodes "
+                        "finds packs); graph unchanged"
+                    )
+                else:
+                    slots = widget_slot_names(class_type, object_info)
+                    if bad := sorted(set(widgets) - set(slots)):
+                        raise ValueError(
+                            f"{class_type} has no widget(s) {bad}; widgets: {slots}; "
+                            "graph unchanged"
+                        )
+                node = wf.add_node(class_type, object_info=object_info, title=op.get("title"))
+                for name, value in widgets.items():
                     wf.set_widget(node.id, name, value, object_info)
                 applied.append(f"added {node.type} as #{node.id}")
             elif kind == "remove_node":
@@ -311,6 +385,15 @@ async def edit_workflow(workflow_id: str, operations: list[dict[str, Any]]) -> d
                 from_output = op["from_output"]
                 if isinstance(from_output, str) and from_output.isdigit():
                     from_output = int(from_output)
+                # a link already feeding the target input gets replaced - say so
+                replaced = ""
+                target = wf.nodes.get(int(op["to_node"]))
+                if target is not None:
+                    slot = target.input_by_name(op["to_input"])
+                    if slot is not None and slot.link is not None:
+                        old = wf.links.get(slot.link)
+                        if old is not None:
+                            replaced = f" (replaced existing link from #{old.origin_id}[{old.origin_slot}])"
                 wf.connect(
                     int(op["from_node"]),
                     from_output,
@@ -319,7 +402,8 @@ async def edit_workflow(workflow_id: str, operations: list[dict[str, Any]]) -> d
                     object_info,
                 )
                 applied.append(
-                    f"connected #{op['from_node']}.{op['from_output']} -> #{op['to_node']}.{op['to_input']}"
+                    f"connected #{op['from_node']}.{op['from_output']} -> "
+                    f"#{op['to_node']}.{op['to_input']}{replaced}"
                 )
             elif kind == "set_widget":
                 wf.set_widget(int(op["node_id"]), op["input"], op["value"], object_info)
@@ -330,10 +414,18 @@ async def edit_workflow(workflow_id: str, operations: list[dict[str, Any]]) -> d
             elif kind == "set_mode":
                 wf.nodes[int(op["node_id"])].mode = int(op["mode"])
                 applied.append(f"mode #{op['node_id']} = {op['mode']}")
-            else:
-                raise ValueError(f"unknown op: {kind!r}")
-    except (KeyError, ValueError) as e:
-        return {"applied": applied, "error": str(e), "hint": "check get_node_info for slot/widget names"}
+    except KeyError as e:
+        return {
+            "applied": applied,
+            "error": f"unknown node id {e}",
+            "hint": "inspect_workflow lists current node ids",
+        }
+    except ValueError as e:
+        return {
+            "applied": applied,
+            "error": str(e),
+            "hint": "get_node_info gives slot/widget names; the op schemas are in this tool's description",
+        }
     return {"applied": applied, "summary": _summary(workflow_id, wf)}
 
 

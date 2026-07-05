@@ -79,6 +79,32 @@ def classify(node: Node, object_info: dict[str, Any]) -> str:
 
 ZEROOUT_TYPE = "ConditioningZeroOut"
 
+# titles we generate ourselves - safe to rewrite on a later organize pass;
+# anything else is human-authored and must never be clobbered
+ROLE_TITLES = {"✅ Positive Prompt", "🚫 Negative Prompt"}
+
+
+def _outputs_conditioning(node: Node) -> bool:
+    return any(o.type == "CONDITIONING" for o in node.outputs)
+
+
+def _feeds_encoder_text(wf: Workflow, node: Node) -> bool:
+    """True if this node's output is wired directly into a conditioning
+    encoder's text/prompt input - i.e. it IS the prompt source, not a distant
+    upstream fragment (wildcard bank, concatenator input, ...)."""
+    for out in node.outputs:
+        for lid in out.links:
+            link = wf.links.get(lid)
+            if link is None:
+                continue
+            target = wf.nodes.get(link.target_id)
+            if target is None or link.target_slot >= len(target.inputs):
+                continue
+            slot_name = target.inputs[link.target_slot].name.lower()
+            if slot_name in ("text", "prompt") and _outputs_conditioning(target):
+                return True
+    return False
+
 
 def _reached_roles(
     wf: Workflow, node: Node, depth: int = 0, via_zeroout: bool = False
@@ -131,7 +157,9 @@ def _title_nodes(wf: Workflow, object_info: dict[str, Any]) -> None:
             node.title = "🚫 Negative (zeroed)"
             continue
         has_text_widget = any(s == "text" for s in _safe_slots(node, object_info))
-        if node.type == "CLIPTextEncode" or has_text_widget:
+        retitlable = node.title is None or node.title in ROLE_TITLES
+        is_prompt_source = _outputs_conditioning(node) or _feeds_encoder_text(wf, node)
+        if (node.type == "CLIPTextEncode" or has_text_widget) and retitlable and is_prompt_source:
             role = _prompt_role(wf, node)
             if role == "positive":
                 node.title = "✅ Positive Prompt"

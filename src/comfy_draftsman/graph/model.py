@@ -23,6 +23,9 @@ from . import widgets as w
 
 VIRTUAL_TYPES = {"Note", "MarkdownNote", "PrimitiveNode", "Reroute"}
 
+# UI-only annotation nodes: never in object_info, single 'text' widget
+NOTE_TYPES = {"Note", "MarkdownNote"}
+
 _UUID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE
 )
@@ -272,6 +275,9 @@ class Workflow:
                 )
             node.widgets_values = w.widget_defaults(class_type, object_info)
             node.properties = {"Node name for S&R": class_type}
+        elif class_type in NOTE_TYPES:
+            node.widgets_values = [""]
+            node.size = [380.0, 180.0]
         if raw_widgets is not None:
             node.widgets_values = raw_widgets
         self.nodes[nid] = node
@@ -393,6 +399,12 @@ class Workflow:
         self, node_id: int, input_name: str, value: Any, object_info: dict[str, Any]
     ) -> None:
         node = self.nodes[node_id]
+        if node.type in NOTE_TYPES:
+            # UI-only note nodes aren't in object_info; they hold one text widget
+            if input_name != "text":
+                raise ValueError(f"{node.type} has a single widget: 'text'")
+            node.widgets_values = [value]
+            return
         slots = w.widget_slot_names(node.type, object_info)
         if input_name not in slots:
             real_widgets = [s for s in slots if not s.endswith(w.SYNTHETIC_SUFFIXES)]

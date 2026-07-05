@@ -20,6 +20,9 @@ uv.lock
 # Session workspaces created at runtime
 .draftsman-sessions/
 
+# Local agent worklogs / evidence (never committed or published)
+.omo/
+
 # OS / editor
 .DS_Store
 Thumbs.db

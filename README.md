@@ -80,7 +80,7 @@ the mutating tools like `run_workflow` / `save_workflow`).
 
 **Discovery** — `get_instance_info`, `search_nodes`, `get_node_info`, `list_models`, `list_templates`
 
-**Authoring** — `create_workflow` (blank or template-seeded), `import_workflow` (UI or API format), `inspect_workflow`, `edit_workflow` (batched ops), `organize_workflow`, `lint_workflow` (readability checks, including `no-prompt-preview`: a wildcard-generated positive prompt should pass through a Show Text node so the user sees the final text)
+**Authoring** — `create_workflow` (blank or template-seeded), `import_workflow` (UI or API format), `inspect_workflow`, `edit_workflow` (batched ops with strict per-op schemas — a failing op stops the batch and leaves the graph unchanged; supports `Note`/`MarkdownNote` annotation nodes via their single `text` widget; `connect` reports when it replaces an existing link), `organize_workflow` (never overwrites human-authored node titles), `lint_workflow` (readability checks, including `no-prompt-preview`: a wildcard-generated positive prompt should pass through a Show Text node so the user sees the final text)
 
 **Correctness** — `validate_workflow` (live checks + closest-match suggestions), `diagnose_workflow` (validation + registry resolution of missing nodes), `port_workflow`
 
