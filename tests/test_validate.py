@@ -92,6 +92,38 @@ def test_widget_count_drift_reported(object_info):
     assert any(f["code"] == "widget-count-drift" for f in findings)
 
 
+def test_widget_count_drift_static_node_stays_warning(object_info):
+    wf = Workflow.new()
+    node = wf.add_node("KSampler", object_info=object_info)
+    node.widgets_values = [42, "randomize"]
+    findings = validate(wf, object_info)
+    drift = [f for f in findings if f["code"] == "widget-count-drift"]
+    assert drift and drift[0]["level"] == "warning"
+
+
+def test_widget_count_drift_dynamic_node_is_info():
+    """Dynamic nodes (text concatenators, switches) declare dozens of optional
+    widgets but serialize only the ones in use - that drift is normal and must
+    not be reported at warning level."""
+    oi = {
+        "DynamicConcat": {
+            "input": {
+                "required": {"delimiter": ["STRING", {"default": ", "}]},
+                "optional": {
+                    f"text_{c}": ["STRING", {"default": ""}] for c in "abcdefghijkl"
+                },
+            },
+            "output": ["STRING"],
+        }
+    }
+    wf = Workflow.new()
+    node = wf.add_node("DynamicConcat")
+    node.widgets_values = [", ", "cat", "dog"]  # only 3 of 13 slots serialized
+    findings = validate(wf, oi)
+    drift = [f for f in findings if f["code"] == "widget-count-drift"]
+    assert drift and drift[0]["level"] == "info", findings
+
+
 def test_null_widget_value_is_error(object_info):
     """A null widget value crashes the ComfyUI editor when queueing - validate
     must flag it even though the count matches and the type is right."""

@@ -56,17 +56,39 @@ def validate(wf: Workflow, object_info: dict[str, Any]) -> list[dict[str, Any]]:
 
         slots = w.widget_slot_names(node.type, object_info)
         if isinstance(node.widgets_values, list) and len(node.widgets_values) != len(slots):
-            findings.append(
-                _finding(
-                    "warning",
-                    "widget-count-drift",
-                    f"{node.type} #{node.id}: has {len(node.widgets_values)} widget values "
-                    f"but current schema expects {len(slots)} ({slots}) - the node's "
-                    "parameters changed since this workflow was made; re-check each value",
-                    node.id,
-                    expected=slots,
-                )
+            # dynamic nodes (text concatenators, switches...) declare dozens of
+            # optional widgets in their schema but the frontend serializes only
+            # the ones in use - a shortfall there is normal, not drift
+            optional_widgets = sum(
+                1
+                for spec in (schema.get("input", {}).get("optional", {}) or {}).values()
+                if w.is_widget_input(spec)
             )
+            dynamic_short = len(node.widgets_values) < len(slots) and optional_widgets >= 6
+            if dynamic_short:
+                findings.append(
+                    _finding(
+                        "info",
+                        "widget-count-drift",
+                        f"{node.type} #{node.id}: {len(node.widgets_values)} of {len(slots)} "
+                        "schema widgets serialized - this node declares many optional "
+                        "widgets and serializes only the ones in use; usually harmless",
+                        node.id,
+                        expected=slots,
+                    )
+                )
+            else:
+                findings.append(
+                    _finding(
+                        "warning",
+                        "widget-count-drift",
+                        f"{node.type} #{node.id}: has {len(node.widgets_values)} widget values "
+                        f"but current schema expects {len(slots)} ({slots}) - the node's "
+                        "parameters changed since this workflow was made; re-check each value",
+                        node.id,
+                        expected=slots,
+                    )
+                )
 
         specs = {
             name: spec
