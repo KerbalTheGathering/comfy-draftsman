@@ -122,3 +122,23 @@ async def test_get_history_for_prompt(client):
     )
     hist = await client.get_history("abc")
     assert hist["status"]["completed"] is True
+
+
+@respx.mock
+async def test_save_userdata_workflow_conflict_raises(client):
+    respx.post(url__regex=rf"{BASE}/api/userdata/.*").mock(
+        return_value=httpx.Response(409)
+    )
+    with pytest.raises(FileExistsError):
+        await client.save_userdata_workflow("taken", {"nodes": []})
+
+
+@respx.mock
+async def test_save_userdata_workflow_overwrite_param(client):
+    route = respx.post(url__regex=rf"{BASE}/api/userdata/.*").mock(
+        return_value=httpx.Response(200, json={})
+    )
+    await client.save_userdata_workflow("mine", {"nodes": []}, overwrite=True)
+    assert "overwrite=true" in str(route.calls[0].request.url)
+    await client.save_userdata_workflow("mine", {"nodes": []})
+    assert "overwrite=false" in str(route.calls[1].request.url)

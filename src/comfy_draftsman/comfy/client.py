@@ -93,13 +93,22 @@ class ComfyClient:
         response = await self._http.post("/interrupt")
         response.raise_for_status()
 
-    async def save_userdata_workflow(self, name: str, document: dict[str, Any]) -> str:
-        """Save a UI-format workflow into ComfyUI's workflow browser (userdata API)."""
+    async def save_userdata_workflow(
+        self, name: str, document: dict[str, Any], overwrite: bool = False
+    ) -> str:
+        """Save a UI-format workflow into ComfyUI's workflow browser (userdata API).
+
+        With overwrite=False (default) ComfyUI answers 409 if the file exists,
+        surfaced here as FileExistsError so callers can pick another name.
+        """
         filename = name if name.endswith(".json") else f"{name}.json"
         response = await self._http.post(
             f"/api/userdata/{quote(f'workflows/{filename}', safe='')}",
+            params={"overwrite": "true" if overwrite else "false"},
             json=document,
         )
+        if response.status_code == 409:
+            raise FileExistsError(filename)
         response.raise_for_status()
         return filename
 

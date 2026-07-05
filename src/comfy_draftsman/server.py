@@ -470,11 +470,17 @@ async def run_workflow(
 
 @mcp.tool(annotations=_WRITE_INSTANCE)
 async def save_workflow(
-    workflow_id: str, name: str, allow_invalid: bool = False
+    workflow_id: str, name: str, allow_invalid: bool = False, overwrite: bool = False
 ) -> dict[str, Any]:
     """Save the workflow (UI format, with all layout/groups/notes) into ComfyUI's
     workflow browser and to the session dir. Run organize_workflow first so the
     saved artifact is readable. This is the deliverable.
+
+    NEVER overwrites an existing workflow file by default: if `name` is taken
+    (e.g. you're saving an edited copy of the user's workflow), the save lands
+    under '<name> (draftsman)' so their original is preserved - the result's
+    renamed_from tells you when that happened. Pass overwrite=True only when the
+    user explicitly wants the existing file replaced.
 
     Validates against the live instance first and REFUSES to save if there are
     validation errors (a broken deliverable is worse than no save) - fix them
@@ -496,15 +502,38 @@ async def save_workflow(
             "findings": errors,
         }
     document = wf.to_ui()
-    filename = await _client().save_userdata_workflow(name, document)
+    candidates = [name, f"{name} (draftsman)"] + [f"{name} (draftsman {i})" for i in range(2, 21)]
+    filename = renamed_from = None
+    for candidate in candidates:
+        try:
+            filename = await _client().save_userdata_workflow(candidate, document, overwrite=overwrite)
+            renamed_from = None if candidate == name else name
+            break
+        except FileExistsError:
+            continue
+    if filename is None:
+        return {
+            "saved": False,
+            "error": (
+                f"'{name}' and 20 draftsman-suffixed variants already exist - "
+                "pass a different name, or overwrite=True to replace deliberately"
+            ),
+        }
     local = _session().persist(workflow_id)
     warnings = lint(wf, object_info)
     return {
+        "saved": True,
         "saved_to_comfyui": f"workflows/{filename} (visible in the ComfyUI workflow browser)",
+        "renamed_from": renamed_from,
         "local_copy": str(local),
         "validation": findings,
         "lint": warnings,
-        "note": "" if not warnings else "lint is not clean - consider organize_workflow before delivering",
+        "note": (
+            f"'{name}' already existed, so this saved as '{filename}' - the original file is untouched. "
+            if renamed_from
+            else ""
+        )
+        + ("" if not warnings else "lint is not clean - consider organize_workflow before delivering"),
     }
 
 
