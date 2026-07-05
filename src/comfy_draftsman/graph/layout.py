@@ -11,6 +11,7 @@ relative to the groups it creates.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from . import widgets as w
@@ -34,11 +35,29 @@ MAX_WIDGET_ROWS = 16
 # column next to a short pipeline row (= a group full of empty space).
 WRAP_TARGET_H = 900.0
 
+# Nodes that render nearly empty when drafted but grow content after the
+# first run (image thumbnails, generated text) - reserve room up front so the
+# populated node doesn't cover its neighbors.
+PREVIEW_RESERVE_H = 320.0  # image thumbnail on PreviewImage/SaveImage/...
+PREVIEW_MIN_W = 340.0
+TEXT_PREVIEW_RESERVE_H = 150.0  # generated text on Show Text-style nodes
+_TEXT_DISPLAY_RE = re.compile(r"show.?text|display.?text|show.?anything", re.IGNORECASE)
+
 # widget names whose nodes want extra width for editing comfort
 _TEXTY_WIDGETS = {"text", "prompt", "wildcard_text", "populated_text", "string"}
 
 
-def estimate_size(class_type: str, object_info: dict[str, Any]) -> tuple[float, float]:
+def is_text_display(class_type: str) -> bool:
+    """Show Text-style display nodes (populated with generated text at run time)."""
+    return _TEXT_DISPLAY_RE.search(class_type) is not None
+
+
+def estimate_size(
+    class_type: str, object_info: dict[str, Any], widget_count: int | None = None
+) -> tuple[float, float]:
+    """Estimated (width, height). widget_count is the node's actual serialized
+    widgets_values length when known - dynamic nodes declare dozens of optional
+    widgets in their schema but render only the ones in use."""
     schema = object_info.get(class_type)
     if schema is None:
         return (DEFAULT_W, 120.0)
@@ -55,13 +74,32 @@ def estimate_size(class_type: str, object_info: dict[str, Any]) -> tuple[float, 
     output_count = len(schema.get("output") or [])
     texty = any(s in _TEXTY_WIDGETS for s in slots)
     width = TEXT_W if texty else DEFAULT_W
+    if widget_count is not None:
+        rows = min(widget_count, len(slots))
+    else:
+        rows = min(len(slots), MAX_WIDGET_ROWS)
     height = (
         HEADER_H
         + max(connection_count, output_count) * SLOT_H
-        + min(len(slots), MAX_WIDGET_ROWS) * WIDGET_H
+        + rows * WIDGET_H
         + (90.0 if texty else 10.0)  # multiline text area
     )
+    takes_image = any(
+        isinstance(spec, list | tuple) and spec and str(spec[0]).upper() == "IMAGE"
+        for section in ("required", "optional")
+        for spec in inputs.get(section, {}).values()
+    )
+    if schema.get("output_node") and takes_image:
+        width = max(width, PREVIEW_MIN_W)
+        height += PREVIEW_RESERVE_H
+    elif is_text_display(class_type):
+        width = max(width, TEXT_W)
+        height += TEXT_PREVIEW_RESERVE_H
     return (width, max(height, MIN_H))
+
+
+def _node_widget_count(node: Any) -> int | None:
+    return len(node.widgets_values) if isinstance(node.widgets_values, list) else None
 
 
 def _ranks(wf: Workflow) -> dict[int, int]:
@@ -101,7 +139,7 @@ def apply_layout(
         return
     for nid in rank:
         node = wf.nodes[nid]
-        node.size = list(estimate_size(node.type, object_info))
+        node.size = list(estimate_size(node.type, object_info, _node_widget_count(node)))
 
     columns: dict[int, list[int]] = {}
     for nid, r in rank.items():
@@ -181,7 +219,9 @@ def apply_staged_layout(
     for nid in stage_of:
         node = wf.nodes[nid]
         if node.type not in NOTE_TYPES:
-            node.size = list(estimate_size(node.type, object_info))
+            node.size = list(
+                estimate_size(node.type, object_info, _node_widget_count(node))
+            )
 
     bands: dict[int, list[int]] = {}
     for nid, stage in sorted(stage_of.items()):

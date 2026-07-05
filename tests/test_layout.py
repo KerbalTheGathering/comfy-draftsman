@@ -49,6 +49,47 @@ def _overlaps(a, b):
     return a[0] < b[2] and b[0] < a[2] and a[1] < b[3] and b[1] < a[3]
 
 
+def test_estimate_uses_actual_widget_count():
+    """Dynamic nodes serialize only the widgets in use; when we know the actual
+    count, the estimate must use it instead of the schema-cap heuristic."""
+    oi = {
+        "DynamicConcat": {
+            "input": {
+                "optional": {
+                    f"text_{c}": ["STRING", {"default": ""}] for c in "abcdefghijklmnopqrst"
+                }
+            },
+            "output": ["STRING"],
+        }
+    }
+    full = estimate_size("DynamicConcat", oi)
+    trimmed = estimate_size("DynamicConcat", oi, widget_count=3)
+    assert trimmed[1] < full[1] - 100
+
+
+def test_image_output_nodes_reserve_preview_space(object_info):
+    """PreviewImage/SaveImage grow a thumbnail after the first run - the layout
+    must leave room so the populated node doesn't cover its neighbors."""
+    for class_type in ("PreviewImage", "SaveImage"):
+        width, height = estimate_size(class_type, object_info)
+        assert height >= 320, f"{class_type} height {height} reserves no preview space"
+        assert width >= 340, f"{class_type} width {width} too narrow for a preview"
+
+
+def test_text_display_nodes_reserve_space():
+    """Show-Text-style nodes grow a text area once populated."""
+    oi = {
+        "ShowText|pys": {
+            "input": {"required": {"text": ["STRING", {"forceInput": True}]}},
+            "output": ["STRING"],
+            "output_node": True,
+        }
+    }
+    width, height = estimate_size("ShowText|pys", oi)
+    assert height >= 150
+    assert width >= 400
+
+
 def test_dataflow_goes_left_to_right(txt2img, object_info):
     wf, _ids = txt2img
     apply_layout(wf, object_info)
