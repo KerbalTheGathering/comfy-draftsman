@@ -80,11 +80,11 @@ the mutating tools like `run_workflow` / `save_workflow`).
 
 **Discovery** — `get_instance_info`, `search_nodes`, `get_node_info`, `list_models`, `list_templates`
 
-**Authoring** — `create_workflow` (blank or template-seeded), `import_workflow` (UI or API format), `inspect_workflow`, `edit_workflow` (batched ops), `organize_workflow`, `lint_workflow`
+**Authoring** — `create_workflow` (blank or template-seeded), `import_workflow` (UI or API format), `inspect_workflow`, `edit_workflow` (batched ops), `organize_workflow`, `lint_workflow` (readability checks, including `no-prompt-preview`: a wildcard-generated positive prompt should pass through a Show Text node so the user sees the final text)
 
 **Correctness** — `validate_workflow` (live checks + closest-match suggestions), `diagnose_workflow` (validation + registry resolution of missing nodes), `port_workflow`
 
-**Execution & delivery** — `run_workflow` (validates, renders, returns a preview image), `save_workflow` (validates first — refuses to save a broken workflow unless `allow_invalid=True` — then lands in ComfyUI's workflow browser), `export_workflow_json`
+**Execution & delivery** — `run_workflow` (validates, renders, returns a preview image), `save_workflow` (validates first — refuses to save a broken workflow unless `allow_invalid=True` — then lands in ComfyUI's workflow browser; never overwrites an existing workflow file unless `overwrite=True` — a taken name saves as `<name> (draftsman)` so your original is preserved), `export_workflow_json`
 
 **Ecosystem & knowledge** — `resolve_missing_nodes`, `search_node_packs`, `get_model_guidance`, `record_learning`
 
