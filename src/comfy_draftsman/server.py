@@ -104,14 +104,17 @@ def _wf(workflow_id: str) -> Workflow:
     return _session().get(workflow_id)
 
 
+def _clip(v: Any) -> Any:
+    return v[:120] + "…" if isinstance(v, str) and len(v) > 120 else v
+
+
 def _widget_preview(n) -> Any:
-    values = n.widgets_values if isinstance(n.widgets_values, list) else dict(n.widgets_values)
-    if n.type in VIRTUAL_TYPES and isinstance(values, list):
-        # note text can be long - truncate the preview, the content is intact
-        values = [
-            v[:120] + "…" if isinstance(v, str) and len(v) > 120 else v for v in values
-        ]
-    return values
+    # prompts/wildcards/note text can be multi-KB and summaries are re-sent on
+    # every inspect/edit - truncate the preview, the graph content is intact
+    # (export_workflow_json shows full values)
+    if isinstance(n.widgets_values, list):
+        return [_clip(v) for v in n.widgets_values]
+    return {k: _clip(v) for k, v in dict(n.widgets_values).items()}
 
 
 def _summary(workflow_id: str, wf: Workflow) -> dict[str, Any]:
@@ -515,7 +518,7 @@ async def validate_workflow(workflow_id: str) -> dict[str, Any]:
     }
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_INSTANCE)
 async def diagnose_workflow(workflow_id: str) -> dict[str, Any]:
     """Deep-check an old/broken workflow and propose fixes: everything from
     validate_workflow PLUS Comfy Registry resolution for missing custom-node
@@ -667,16 +670,27 @@ async def save_workflow(
                 "pass a different name, or overwrite=True to replace deliberately"
             ),
         }
-    local = _session().persist(workflow_id)
+    # the ComfyUI-side save above succeeded; a local backup-copy failure
+    # (unwritable session dir on a locked-down machine) must not fail the tool
+    try:
+        local: str | None = str(_session().persist(workflow_id))
+        persist_note = ""
+    except OSError as e:
+        local = None
+        persist_note = (
+            f"local session copy could not be written ({e}) - the ComfyUI save above "
+            "still succeeded; set DRAFTSMAN_SESSION_DIR to a writable path to fix. "
+        )
     warnings = lint(wf, object_info)
     return {
         "saved": True,
         "saved_to_comfyui": f"workflows/{filename} (visible in the ComfyUI workflow browser)",
         "renamed_from": renamed_from,
-        "local_copy": str(local),
+        "local_copy": local,
         "validation": findings,
         "lint": warnings,
-        "note": (
+        "note": persist_note
+        + (
             f"'{name}' already existed, so this saved as '{filename}' - the original file is untouched. "
             if renamed_from
             else ""

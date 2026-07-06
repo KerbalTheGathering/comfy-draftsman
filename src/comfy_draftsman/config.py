@@ -11,7 +11,12 @@ REGISTRY_URL = "https://api.comfy.org"
 
 
 def _default_session_dir() -> Path:
-    return Path(os.environ.get("DRAFTSMAN_SESSION_DIR", Path.cwd() / ".draftsman-sessions"))
+    # Never derive from cwd: MCP hosts (Claude Desktop) launch servers with
+    # cwd set to a system directory (e.g. C:\Windows\System32) where writes
+    # need admin rights.
+    return Path(
+        os.environ.get("DRAFTSMAN_SESSION_DIR", Path.home() / ".comfy-draftsman" / "sessions")
+    )
 
 
 def _default_learned_dir() -> Path:

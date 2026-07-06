@@ -62,7 +62,7 @@ Then just ask your agent things like:
 | Env var | Default | Purpose |
 |---|---|---|
 | `COMFYUI_URL` | `http://127.0.0.1:8188` | The ComfyUI instance to drive |
-| `DRAFTSMAN_SESSION_DIR` | `./.draftsman-sessions` | Where in-progress workflows persist |
+| `DRAFTSMAN_SESSION_DIR` | `~/.comfy-draftsman/sessions` | Where in-progress workflows persist |
 | `DRAFTSMAN_LEARNED_DIR` | `~/.comfy-draftsman/learned` | Persistent learned model knowledge |
 | `DRAFTSMAN_TIMEOUT` | `30` | HTTP timeout (seconds) |
 

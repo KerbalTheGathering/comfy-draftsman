@@ -60,6 +60,9 @@ class Session:
         return path
 
     def _load(self, wf_id: str) -> bool:
+        # ids are token_hex(4); anything else could smuggle path separators
+        if not wf_id.isalnum():
+            return False
         path = self._dir / f"{wf_id}.json"
         if not path.is_file():
             return False
