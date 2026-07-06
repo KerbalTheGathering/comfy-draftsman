@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "comfy-draftsman"
-version = "0.1.0"
+version = "0.2.0"
 description = "Local-first MCP server that drafts, organizes, validates, and runs ComfyUI workflows - saved as clean, labeled, annotated UI-format graphs anyone can read."
 readme = "README.md"
 license = "MIT"
@@ -27,6 +27,7 @@ dependencies = [
   "websockets>=13.0",
   "pyyaml>=6.0",
   "pydantic>=2.7",
+  "pillow>=10.0",
 ]
 
 [project.urls]

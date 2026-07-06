@@ -13,6 +13,7 @@ from typing import Any
 from ..graph import widgets as w
 
 MAX_COMBO_CHOICES = 24
+MAX_TOOLTIP_CHARS = 160  # tooltips are rarely needed to wire a node correctly
 
 
 def search_nodes(
@@ -48,7 +49,7 @@ def search_nodes(
                 {
                     "class_type": class_type,
                     "display_name": display,
-                    "description": description[:200],
+                    "description": description[:120],
                     "category": cat,
                     "output_node": bool(schema.get("output_node")),
                 },
@@ -87,6 +88,8 @@ def node_summary(object_info: dict[str, Any], class_type: str) -> dict[str, Any]
             for key in ("default", "min", "max", "tooltip", "control_after_generate"):
                 if key in opts:
                     entry[key] = opts[key]
+            if isinstance(entry.get("tooltip"), str) and len(entry["tooltip"]) > MAX_TOOLTIP_CHARS:
+                entry["tooltip"] = entry["tooltip"][:MAX_TOOLTIP_CHARS] + "…"
             if opts.get("control_after_generate"):
                 entry["control_slot"] = f"{name}__control_after_generate"
             inputs.append(entry)
@@ -98,7 +101,7 @@ def node_summary(object_info: dict[str, Any], class_type: str) -> dict[str, Any]
     return {
         "class_type": class_type,
         "display_name": schema.get("display_name", class_type),
-        "description": (schema.get("description") or "")[:500],
+        "description": (schema.get("description") or "")[:300],
         "category": schema.get("category", ""),
         "output_node": bool(schema.get("output_node")),
         "inputs": inputs,

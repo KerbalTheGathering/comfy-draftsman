@@ -71,8 +71,16 @@ class ComfyClient:
     async def get_template_workflow(self, name: str) -> dict[str, Any]:
         return await self._get_json(f"/templates/{name}.json")
 
-    async def queue_prompt(self, api_prompt: dict[str, Any], extra_data: dict[str, Any] | None = None) -> dict[str, Any]:
-        payload: dict[str, Any] = {"prompt": api_prompt, "client_id": self.client_id}
+    async def queue_prompt(
+        self,
+        api_prompt: dict[str, Any],
+        extra_data: dict[str, Any] | None = None,
+        client_id: str | None = None,
+    ) -> dict[str, Any]:
+        # client_id override: non-blocking runs queue under the ProgressTracker's
+        # id so ITS socket receives the per-prompt events (ComfyUI routes them
+        # to the queuing client's socket only).
+        payload: dict[str, Any] = {"prompt": api_prompt, "client_id": client_id or self.client_id}
         if extra_data:
             payload["extra_data"] = extra_data
         response = await self._http.post("/prompt", json=payload)
@@ -92,6 +100,60 @@ class ComfyClient:
     async def interrupt(self) -> None:
         response = await self._http.post("/interrupt")
         response.raise_for_status()
+
+    async def clear_queue(self) -> None:
+        response = await self._http.post("/queue", json={"clear": True})
+        response.raise_for_status()
+
+    async def delete_queue_items(self, prompt_ids: list[str]) -> None:
+        response = await self._http.post("/queue", json={"delete": prompt_ids})
+        response.raise_for_status()
+
+    async def free(self, unload_models: bool = False, free_memory: bool = True) -> None:
+        response = await self._http.post(
+            "/free", json={"unload_models": unload_models, "free_memory": free_memory}
+        )
+        response.raise_for_status()
+
+    async def upload_image(
+        self,
+        data: bytes,
+        name: str,
+        subfolder: str = "",
+        overwrite: bool = False,
+        image_type: str = "input",
+    ) -> dict[str, Any]:
+        """POST /upload/image -> {"name", "subfolder", "type"}."""
+        form: dict[str, str] = {"type": image_type, "overwrite": "true" if overwrite else "false"}
+        if subfolder:
+            form["subfolder"] = subfolder
+        response = await self._http.post(
+            "/upload/image", files={"image": (name, data)}, data=form
+        )
+        response.raise_for_status()
+        return response.json()
+
+    async def upload_mask(
+        self,
+        data: bytes,
+        name: str,
+        original_ref: dict[str, Any],
+        subfolder: str = "",
+        overwrite: bool = False,
+    ) -> dict[str, Any]:
+        """POST /upload/mask; original_ref names the image the mask belongs to."""
+        form: dict[str, str] = {
+            "type": "input",
+            "overwrite": "true" if overwrite else "false",
+            "original_ref": json.dumps(original_ref),
+        }
+        if subfolder:
+            form["subfolder"] = subfolder
+        response = await self._http.post(
+            "/upload/mask", files={"image": (name, data)}, data=form
+        )
+        response.raise_for_status()
+        return response.json()
 
     @staticmethod
     def _workflow_userdata_path(name: str) -> str:
@@ -153,10 +215,10 @@ class ComfyClient:
                     outputs.append({**item, "node_id": node_id, "kind": key})
         return outputs
 
-    def _ws_url(self) -> str:
+    def _ws_url(self, client_id: str | None = None) -> str:
         scheme = "wss" if self.base_url.startswith("https") else "ws"
         host = self.base_url.split("://", 1)[1]
-        return f"{scheme}://{host}/ws?clientId={self.client_id}"
+        return f"{scheme}://{host}/ws?clientId={client_id or self.client_id}"
 
     async def run_and_wait(
         self, api_prompt: dict[str, Any], timeout: float = 600.0
@@ -214,15 +276,6 @@ class ComfyClient:
                 "type": error.get("exception_type"),
             }
         return result
-
-    def view_url(self, item: dict[str, Any]) -> str:
-        """URL to fetch an output file returned by run_and_wait."""
-        params = httpx.QueryParams(
-            filename=item.get("filename", ""),
-            subfolder=item.get("subfolder", ""),
-            type=item.get("type", "output"),
-        )
-        return f"{self.base_url}/view?{params}"
 
     async def fetch_output(self, item: dict[str, Any]) -> bytes:
         response = await self._http.get("/view", params={

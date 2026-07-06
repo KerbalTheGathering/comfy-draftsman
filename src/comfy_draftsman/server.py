@@ -7,8 +7,10 @@ process, created lazily.
 
 from __future__ import annotations
 
+import base64
 import difflib
 import json
+from pathlib import Path
 from typing import Any, Literal
 
 import yaml
@@ -20,6 +22,7 @@ from . import knowledge
 from .comfy.catalog import node_summary
 from .comfy.catalog import search_nodes as catalog_search
 from .comfy.client import ComfyClient, ComfyValidationError
+from .comfy.progress import ProgressTracker
 from .comfy.registry import RegistryClient
 from .config import Config, load_config
 from .graph.annotate import annotate
@@ -28,6 +31,7 @@ from .graph.model import NOTE_TYPES, VIRTUAL_TYPES, Workflow
 from .graph.port import port_workflow as port_engine
 from .graph.validate import validate
 from .graph.widgets import widget_slot_names
+from .imaging import downscale_image
 from .session import Session
 
 # Tool annotations let clients reason about safety and, where supported,
@@ -38,29 +42,23 @@ _READ_INSTANCE = ToolAnnotations(readOnlyHint=True, openWorldHint=True, idempote
 _READ_LOCAL = ToolAnnotations(readOnlyHint=True, openWorldHint=False, idempotentHint=True)
 _EDIT_LOCAL = ToolAnnotations(readOnlyHint=False, openWorldHint=False, destructiveHint=False)
 _WRITE_INSTANCE = ToolAnnotations(readOnlyHint=False, openWorldHint=True, destructiveHint=False)
+_DESTRUCTIVE_INSTANCE = ToolAnnotations(readOnlyHint=False, openWorldHint=True, destructiveHint=True)
 
 mcp = FastMCP(
     "comfy-draftsman",
     instructions=(
         "Draft, repair, port, validate, run, and SAVE ComfyUI workflows against the "
         "user's local ComfyUI instance. The finished artifact is always an organized, "
-        "labeled workflow: run organize_workflow before save_workflow so a human gets "
-        "groups, notes, and highlighted knobs. Ground truth is the live instance "
-        "(search_nodes/get_node_info/list_models); templates (list_templates) are the "
-        "best starting points for current models. get_node_info accepts a list of "
-        "class_types - batch your lookups in ONE call instead of one per node. "
-        "To work on a workflow the user already saved in ComfyUI, use "
-        "list_workflows then import_workflow(name=...) - never ask them to paste "
-        "JSON that's already on the instance. "
-        "get_model_guidance returns tuned settings per model family; when you research "
-        "better settings online, persist them with record_learning (include a 'detect' "
-        "block for brand-new families so they're recognized next session). "
-        "When a positive prompt is GENERATED upstream (wildcards, concatenators) "
-        "instead of hand-typed, wire it through a Show Text node before the encoder "
-        "so the user can see the final prompt (lint flags this as no-prompt-preview). "
-        "When modernizing a workflow, if some nodes have no core/installed equivalent, "
-        "tell the user exactly what capability would be LOST before they choose "
-        "'core nodes only' vs installing a pack - don't drop features silently."
+        "labeled workflow: run organize_workflow before save_workflow. Ground truth is "
+        "the live instance (search_nodes/get_node_info/list_models); templates "
+        "(list_templates) are the best starting points for current models. Batch "
+        "get_node_info lookups (it takes a list) in ONE call. For a workflow already "
+        "saved in ComfyUI, use list_workflows then import_workflow(name=...) - never "
+        "ask for pasted JSON. get_model_guidance has tuned per-family settings; "
+        "persist anything you research with record_learning. A GENERATED positive "
+        "prompt (wildcards/concatenators) should pass through a Show Text node before "
+        "the encoder (lint: no-prompt-preview). When modernizing, spell out any "
+        "capability that would be LOST before dropping nodes - never silently."
     ),
 )
 
@@ -70,6 +68,7 @@ class _State:
     client: ComfyClient | None = None
     registry: RegistryClient | None = None
     session: Session | None = None
+    tracker: ProgressTracker | None = None
 
 
 def _config() -> Config:
@@ -94,6 +93,21 @@ def _session() -> Session:
     if _State.session is None:
         _State.session = Session(_config().session_dir)
     return _State.session
+
+
+def _tracker() -> ProgressTracker:
+    if _State.tracker is None:
+        _State.tracker = ProgressTracker(_client()._ws_url)
+    return _State.tracker
+
+
+def _check_output_ref(filename: str, subfolder: str) -> str | None:
+    """Refuse refs that could escape ComfyUI's output/input/temp dirs."""
+    for part in (filename, subfolder):
+        clean = part.replace("\\", "/")
+        if clean.startswith("/") or ".." in clean.split("/"):
+            return f"invalid path component: {part!r}"
+    return None
 
 
 async def _object_info(refresh: bool = False) -> dict[str, Any]:
@@ -586,13 +600,24 @@ async def port_workflow(workflow_id: str, target_family: str) -> dict[str, Any]:
 # --------------------------------------------------------------------------
 
 
-@mcp.tool()
+# run/view/upload/queue tool concepts inspired by KerbalTheGathering/ComfyUI_MCP
+# (independently implemented; see README acknowledgments).
+
+PREVIEW_MAX_DIM = 768  # inline previews are thumbnails; view_output serves full size
+
+
+@mcp.tool(annotations=_WRITE_INSTANCE)
 async def run_workflow(
-    workflow_id: str, timeout_seconds: float = 600, return_preview: bool = True
+    workflow_id: str,
+    timeout_seconds: float = 600,
+    return_preview: bool = True,
+    wait: bool = True,
 ) -> Any:
-    """Queue the workflow on the instance and wait for completion. Returns status,
-    node errors if it failed, output files, and (optionally) a preview image so you
-    can SEE the result. Prove a workflow works before saving/delivering it."""
+    """Queue the workflow and (by default) wait for completion. Returns status,
+    node errors if it failed, output file refs, and an inline preview thumbnail so
+    you can SEE the result (view_output fetches full size / other outputs).
+    wait=False returns {status: queued, prompt_id} immediately - poll
+    get_run_status(prompt_id). Prove a workflow works before saving/delivering."""
     wf = _wf(workflow_id)
     object_info = await _object_info()
     errors = [f for f in validate(wf, object_info) if f["level"] == "error"]
@@ -606,6 +631,18 @@ async def run_workflow(
         api = wf.to_api(object_info)
     except ValueError as e:
         return {"status": "invalid", "error": str(e)}
+    if not wait:
+        tracker = _tracker()
+        tracker.ensure_running()
+        try:
+            queued = await _client().queue_prompt(api, client_id=tracker.client_id)
+        except ComfyValidationError as e:
+            return {"status": "rejected", "error": str(e), "node_errors": e.node_errors}
+        return {
+            "status": "queued",
+            "prompt_id": queued["prompt_id"],
+            "hint": "poll get_run_status(prompt_id) for progress and outputs",
+        }
     try:
         result = await _client().run_and_wait(api, timeout=timeout_seconds)
     except ComfyValidationError as e:
@@ -614,28 +651,192 @@ async def run_workflow(
         image_items = [o for o in result["outputs"] if o.get("kind") == "images"]
         if image_items:
             data = await _client().fetch_output(image_items[0])
-            if len(data) < 1_500_000:
-                return [result, Image(data=data, format="png")]
+            try:
+                thumb, fmt = downscale_image(data, PREVIEW_MAX_DIM)
+            except ValueError:
+                return result  # first "image" output isn't decodable; refs still returned
+            result["preview"] = (
+                f"inline image is a <={PREVIEW_MAX_DIM}px thumbnail of "
+                f"{image_items[0].get('filename')} - view_output(filename=..., "
+                "max_dim=None) for full size or other outputs"
+            )
+            return [result, Image(data=thumb, format=fmt)]
     return result
+
+
+@mcp.tool(annotations=_READ_INSTANCE)
+async def view_output(
+    filename: str,
+    subfolder: str = "",
+    type: Literal["output", "temp", "input"] = "output",
+    max_dim: int | None = 1024,
+) -> Any:
+    """Fetch a rendered image so you (and the user) can SEE it - refs come from
+    run_workflow/get_run_status outputs. Downscaled to max_dim px to keep the
+    conversation light; max_dim=None for full resolution."""
+    problem = _check_output_ref(filename, subfolder)
+    if problem:
+        return {"error": problem}
+    try:
+        data = await _client().fetch_output(
+            {"filename": filename, "subfolder": subfolder, "type": type}
+        )
+    except Exception as e:
+        return {"error": f"could not fetch {filename!r}: {e}"}
+    try:
+        data, fmt = downscale_image(data, max_dim)
+    except ValueError as e:
+        return {"error": str(e), "hint": "only image outputs can be viewed inline"}
+    return Image(data=data, format=fmt)
+
+
+def _history_error(history: dict[str, Any]) -> dict[str, Any] | None:
+    for name, data in history.get("status", {}).get("messages", []) or []:
+        if name == "execution_error":
+            return {
+                "node_id": data.get("node_id"),
+                "node_type": data.get("node_type"),
+                "message": data.get("exception_message"),
+                "type": data.get("exception_type"),
+            }
+    return None
+
+
+@mcp.tool(annotations=_READ_INSTANCE)
+async def get_run_status(prompt_id: str) -> dict[str, Any]:
+    """Status of a run queued with run_workflow(wait=False): queue position, live
+    step progress while sampling, and outputs (+ error details) once finished."""
+    client = _client()
+    history = await client.get_history(prompt_id)
+    if history:
+        error = _history_error(history)
+        result: dict[str, Any] = {
+            "status": "error" if error else "success",
+            "prompt_id": prompt_id,
+            "outputs": client._collect_outputs(history),
+        }
+        if error:
+            result["error"] = error
+        else:
+            result["hint"] = "view_output(filename=...) to see an image output"
+        return result
+    queue = await client.get_queue()
+    running = [entry[1] for entry in queue.get("queue_running", [])]
+    pending = [entry[1] for entry in queue.get("queue_pending", [])]
+    snapshot = _tracker().snapshot(prompt_id)
+    if prompt_id in running:
+        return {"status": "running", "prompt_id": prompt_id, **snapshot}
+    if prompt_id in pending:
+        return {
+            "status": "pending",
+            "prompt_id": prompt_id,
+            "queue_position": pending.index(prompt_id) + 1,
+            "queue_pending": len(pending),
+        }
+    return {
+        "status": "unknown",
+        "prompt_id": prompt_id,
+        "note": "not in queue or history - wrong prompt_id, or history was cleared",
+        **snapshot,
+    }
+
+
+@mcp.tool(annotations=_WRITE_INSTANCE)
+async def upload_image(
+    image_path: str | None = None,
+    image_base64: str | None = None,
+    name: str | None = None,
+    subfolder: str = "",
+    overwrite: bool = False,
+    mask_for: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Upload a source image into ComfyUI's input folder so LoadImage can use it
+    (img2img / inpaint / ControlNet). Exactly one of image_path (local file) or
+    image_base64. mask_for={filename, subfolder?, type?} uploads this as a MASK
+    for that already-uploaded image instead."""
+    if (image_path is None) == (image_base64 is None):
+        return {"error": "pass exactly one of image_path or image_base64"}
+    if image_path is not None:
+        path = Path(image_path)
+        if not path.is_file():
+            return {"error": f"not a file: {image_path}"}
+        data = path.read_bytes()
+        name = name or path.name
+    else:
+        try:
+            data = base64.b64decode(image_base64, validate=True)
+        except Exception as e:
+            return {"error": f"invalid base64: {e}"}
+        name = name or "upload.png"
+    if ".." in name or any(sep in name for sep in ("/", "\\")):
+        return {"error": "name must be a plain filename - no path separators or '..'"}
+    problem = _check_output_ref(name, subfolder)
+    if problem:
+        return {"error": problem}
+    client = _client()
+    if mask_for is not None:
+        if not mask_for.get("filename"):
+            return {"error": "mask_for needs at least {filename: ...}"}
+        ref = {
+            "filename": mask_for["filename"],
+            "subfolder": mask_for.get("subfolder", ""),
+            "type": mask_for.get("type", "input"),
+        }
+        uploaded = await client.upload_mask(data, name, ref, subfolder=subfolder, overwrite=overwrite)
+    else:
+        uploaded = await client.upload_image(data, name, subfolder=subfolder, overwrite=overwrite)
+    served_name = uploaded.get("name", name)
+    served_sub = uploaded.get("subfolder", "")
+    return {
+        "uploaded": uploaded,
+        "hint": (
+            "reference it in a LoadImage node's image widget as "
+            f"{(served_sub + '/' if served_sub else '') + served_name!r}"
+        ),
+    }
+
+
+@mcp.tool(annotations=_DESTRUCTIVE_INSTANCE)
+async def manage_queue(
+    action: Literal["status", "interrupt", "clear", "delete", "free"],
+    prompt_ids: list[str] | None = None,
+    unload_models: bool = False,
+) -> dict[str, Any]:
+    """Inspect or manage the instance's run queue: status (prompt ids only),
+    interrupt (stop the currently running prompt), clear (drop ALL pending),
+    delete (drop specific pending prompt_ids), free (release cached VRAM/RAM;
+    unload_models=True also unloads models). clear/delete/interrupt discard
+    other queued work - make sure that's what the user wants."""
+    client = _client()
+    if action == "status":
+        queue = await client.get_queue()
+        running = [entry[1] for entry in queue.get("queue_running", [])]
+        pending = [entry[1] for entry in queue.get("queue_pending", [])]
+        return {"running": running, "pending": pending, "pending_count": len(pending)}
+    if action == "interrupt":
+        await client.interrupt()
+        return {"done": "interrupt sent to the running prompt"}
+    if action == "clear":
+        await client.clear_queue()
+        return {"done": "pending queue cleared"}
+    if action == "delete":
+        if not prompt_ids:
+            return {"error": "delete requires prompt_ids"}
+        await client.delete_queue_items(prompt_ids)
+        return {"done": f"deleted {len(prompt_ids)} pending prompt(s)"}
+    await client.free(unload_models=unload_models)
+    return {"done": "freed memory" + (" and unloaded models" if unload_models else "")}
 
 
 @mcp.tool(annotations=_WRITE_INSTANCE)
 async def save_workflow(
     workflow_id: str, name: str, allow_invalid: bool = False, overwrite: bool = False
 ) -> dict[str, Any]:
-    """Save the workflow (UI format, with all layout/groups/notes) into ComfyUI's
-    workflow browser and to the session dir. Run organize_workflow first so the
-    saved artifact is readable. This is the deliverable.
-
-    NEVER overwrites an existing workflow file by default: if `name` is taken
-    (e.g. you're saving an edited copy of the user's workflow), the save lands
-    under '<name> (draftsman)' so their original is preserved - the result's
-    renamed_from tells you when that happened. Pass overwrite=True only when the
-    user explicitly wants the existing file replaced.
-
-    Validates against the live instance first and REFUSES to save if there are
-    validation errors (a broken deliverable is worse than no save) - fix them
-    with edit_workflow, or pass allow_invalid=True to save a known-broken draft."""
+    """Save the workflow (UI format, with layout/groups/notes) into ComfyUI's
+    workflow browser + the session dir. Run organize_workflow first - this is the
+    deliverable. REFUSES to save with validation errors unless allow_invalid=True.
+    Never overwrites by default: a taken name saves as '<name> (draftsman)'
+    (result.renamed_from says so); overwrite=True replaces deliberately."""
     if ".." in name or any(sep in name for sep in ("/", "\\")):
         return {"error": "name must be a plain filename - no path separators or '..'"}
     wf = _wf(workflow_id)
@@ -755,15 +956,12 @@ async def get_model_guidance(family: str = "", model_filename: str = "") -> dict
 
 @mcp.tool(annotations=_EDIT_LOCAL)
 async def record_learning(family: str, updates: dict[str, Any], source: str) -> dict[str, Any]:
-    """Persist researched settings so FUTURE sessions start smarter. updates uses the
-    guidance shape, e.g. {"sampling": {"cfg": {"default": 3.5}}} or
-    {"techniques": {"face_detailer": {"denoise": 0.4, "cfg": 1.0}}} or
-    {"notes": {"sampling": "..."}}. source = where you learned it (URL/model page).
-
-    Works for brand-new families too - pass any family name. For a NEW family,
-    also include a "detect" block so the server RECOGNIZES it automatically next
-    session (otherwise it'll re-misdetect as a lookalike family):
-    {"detect": {"checkpoint_patterns": ["mymodel"]}, "loader": "unet_clip_vae"}."""
+    """Persist researched settings so FUTURE sessions start smarter. updates uses
+    the guidance shape, e.g. {"sampling": {"cfg": {"default": 3.5}}} or
+    {"techniques": {"face_detailer": {"denoise": 0.4}}}. source = URL/model page.
+    Any family name works; for a NEW family also include a "detect" block so it's
+    auto-recognized next session: {"detect": {"checkpoint_patterns": ["mymodel"]},
+    "loader": "unet_clip_vae"}."""
     path = knowledge.save_learning(_config().learned_dir, family, updates, source)
     return {"saved": str(path), "guidance_now": knowledge.get_guidance(family, learned_dir=_config().learned_dir)}
 
