@@ -34,7 +34,10 @@ Every agent tool for ComfyUI can emit raw API-format JSON — a working but unre
 **Claude Code:**
 
 ```bash
-claude mcp add comfy-draftsman -e COMFYUI_URL=http://127.0.0.1:8188 -- uvx --from git+https://github.com/EnragedAntelope/comfy-draftsman comfy-draftsman
+claude mcp add comfy-draftsman \
+  -e COMFYUI_URL=http://127.0.0.1:8188 \
+  -e COMFYUI_MOUNT_DIR=/path/your/agent/can/reach \
+  -- uvx --from git+https://github.com/EnragedAntelope/comfy-draftsman comfy-draftsman
 ```
 
 **Claude Desktop / other MCP clients** (`mcpServers` config):
@@ -45,11 +48,21 @@ claude mcp add comfy-draftsman -e COMFYUI_URL=http://127.0.0.1:8188 -- uvx --fro
     "comfy-draftsman": {
       "command": "uvx",
       "args": ["--from", "git+https://github.com/EnragedAntelope/comfy-draftsman", "comfy-draftsman"],
-      "env": { "COMFYUI_URL": "http://127.0.0.1:8188" }
+      "env": {
+        "COMFYUI_URL": "http://127.0.0.1:8188",
+        "COMFYUI_MOUNT_DIR": "/path/your/agent/can/reach"
+      }
     }
   }
 }
 ```
+
+`COMFYUI_MOUNT_DIR` is optional but recommended: it's a folder your agent (or a
+sandboxed client like Claude Desktop / Cowork) can actually read, and `save_output`
+/ `run_workflow` relocate finished renders there — otherwise renders stay inside
+ComfyUI's `output/` tree and every save needs an explicit `dest_dir`. On Windows use
+a native path, e.g. `C:\\Users\\you\\comfy-renders`. See **[Configuration](#configuration)**
+for all environment variables.
 
 Then just ask your agent things like:
 
