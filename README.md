@@ -19,6 +19,7 @@ Every agent tool for ComfyUI can emit raw API-format JSON — a working but unre
 - **Diagnose & modernize** — hand it an old broken workflow: it reports every incompatibility against your live instance (renamed nodes, changed widget layouts, missing model files with closest-installed suggestions) and resolves missing custom nodes to installable packs via the official Comfy Registry.
 - **Port** — retarget across model families (`sdxl` → `flux`, ...): swaps loader topology (checkpoint ⇄ separate UNET/CLIP/VAE loaders) and rewires consumers, retunes CFG/steps/samplers *and* technique nodes (FaceDetailer settings are family-specific — there is no universal detailer config), swaps latent node classes, picks installed model files, and flags everything needing human judgment.
 - **Validate & prove** — structural + live validation, then an actual render with an inline preview, before the workflow is ever delivered.
+- **V3 dynamic combos** — modern nodes whose choices reveal conditional sub-widgets (`COMFY_DYNAMICCOMBO_V3` — e.g. `SaveImageAdvanced`'s `format`, Depth-Anything-3's `mode`/`output`) are first-class: their values are set, round-tripped, validated, and serialized to the API's dotted-key form (`output.normalization`), so a graph containing them runs end-to-end through the draftsman alone.
 - **Run & watch** — run any workflow (one you just built, or one already saved in your ComfyUI) and *see* the output right in the conversation: previews come back as downscaled thumbnails to keep the chat light, with `view_output` fetching full resolution on demand. Long renders can queue in the background (`wait=False`) with live step progress via `get_run_status`. Upload source images for img2img/inpaint, and manage the queue when something needs interrupting.
 - **Learn** — a two-layer knowledge system: a curated per-family floor (SD1.5/SDXL/SD3.5/FLUX/Krea-2/Chroma/Qwen-Image/Wan/LTX, variant-aware for turbo/lightning/DMD/distills) plus a **persistent learned overlay**: when the agent researches better settings for a new model, `record_learning` saves them so every future session starts smarter. A learned entry can carry its own `detect` block, so a brand-new model researched once becomes **self-detecting** next session instead of being mistaken for a lookalike family.
 - **Stay current** — ground truth is your running ComfyUI (`/object_info`, live templates, live model lists), never a bundled snapshot.
@@ -33,7 +34,10 @@ Every agent tool for ComfyUI can emit raw API-format JSON — a working but unre
 **Claude Code:**
 
 ```bash
-claude mcp add comfy-draftsman -e COMFYUI_URL=http://127.0.0.1:8188 -- uvx --from git+https://github.com/EnragedAntelope/comfy-draftsman comfy-draftsman
+claude mcp add comfy-draftsman \
+  -e COMFYUI_URL=http://127.0.0.1:8188 \
+  -e COMFYUI_MOUNT_DIR=/path/your/agent/can/reach \
+  -- uvx --from git+https://github.com/EnragedAntelope/comfy-draftsman comfy-draftsman
 ```
 
 **Claude Desktop / other MCP clients** (`mcpServers` config):
@@ -44,11 +48,21 @@ claude mcp add comfy-draftsman -e COMFYUI_URL=http://127.0.0.1:8188 -- uvx --fro
     "comfy-draftsman": {
       "command": "uvx",
       "args": ["--from", "git+https://github.com/EnragedAntelope/comfy-draftsman", "comfy-draftsman"],
-      "env": { "COMFYUI_URL": "http://127.0.0.1:8188" }
+      "env": {
+        "COMFYUI_URL": "http://127.0.0.1:8188",
+        "COMFYUI_MOUNT_DIR": "/path/your/agent/can/reach"
+      }
     }
   }
 }
 ```
+
+`COMFYUI_MOUNT_DIR` is optional but recommended: it's a folder your agent (or a
+sandboxed client like Claude Desktop / Cowork) can actually read, and `save_output`
+/ `run_workflow` relocate finished renders there — otherwise renders stay inside
+ComfyUI's `output/` tree and every save needs an explicit `dest_dir`. On Windows use
+a native path, e.g. `C:\\Users\\you\\comfy-renders`. See **[Configuration](#configuration)**
+for all environment variables.
 
 Then just ask your agent things like:
 
@@ -65,6 +79,7 @@ Then just ask your agent things like:
 | `COMFYUI_URL` | `http://127.0.0.1:8188` | The ComfyUI instance to drive |
 | `DRAFTSMAN_SESSION_DIR` | `~/.comfy-draftsman/sessions` | Where in-progress workflows persist |
 | `DRAFTSMAN_LEARNED_DIR` | `~/.comfy-draftsman/learned` | Persistent learned model knowledge |
+| `COMFYUI_MOUNT_DIR` | _(unset)_ | Folder a sandboxed client can reach; `save_output` (and `run_workflow`'s auto-relocate) copy finished renders here out of ComfyUI's `output/` tree |
 | `DRAFTSMAN_TIMEOUT` | `30` | HTTP timeout (seconds) |
 
 ### Reducing permission prompts
@@ -85,7 +100,7 @@ the mutating tools like `run_workflow` / `save_workflow`).
 
 **Correctness** — `validate_workflow` (live checks + closest-match suggestions), `diagnose_workflow` (validation + registry resolution of missing nodes), `port_workflow` (cross-family model ports like SDXL→Flux — missing-node repair is `diagnose_workflow`/`resolve_missing_nodes`, not this)
 
-**Execution & delivery** — `run_workflow` (validates, renders, returns an inline preview thumbnail; `wait=False` queues in the background), `get_run_status` (queue position, live step progress, outputs when done), `view_output` (fetch any rendered image so the agent — and you — can *see* it; downscaled by default, `max_dim=None` for full resolution), `upload_image` (put a source image/mask into ComfyUI's input folder for img2img / inpaint / ControlNet), `manage_queue` (status / interrupt / clear / delete / free memory), `save_workflow` (validates first — refuses to save a broken workflow unless `allow_invalid=True` — then lands in ComfyUI's workflow browser; never overwrites an existing workflow file unless `overwrite=True` — a taken name saves as `<name> (draftsman)` so your original is preserved), `export_workflow_json`
+**Execution & delivery** — `run_workflow` (validates, renders, returns an inline preview thumbnail; `wait=False` queues in the background; `allow_invalid=True` submits past the local validator when you're sure a graph is fine; `save_dir=...` — or a configured `COMFYUI_MOUNT_DIR` — auto-relocates the finished renders and returns their `saved_paths`, so one call gets you a presentable file), `get_run_status` (queue position, live step progress, outputs when done), `view_output` (fetch any rendered image so the agent — and you — can *see* it; downscaled by default, `max_dim=None` for full resolution), `save_output` (copy a finished render out of ComfyUI's `output/` tree into a folder the caller can reach — needed because ComfyUI's save nodes only write inside `output/` and reject absolute paths; takes a `prompt_id` or an explicit `filename`), `upload_image` (put a source image/mask into ComfyUI's input folder for img2img / inpaint / ControlNet), `manage_queue` (status / interrupt / clear / delete / free memory), `save_workflow` (validates first — refuses to save a broken workflow unless `allow_invalid=True` — then lands in ComfyUI's workflow browser; never overwrites an existing workflow file unless `overwrite=True` — a taken name saves as `<name> (draftsman)` so your original is preserved), `export_workflow_json`
 
 **Ecosystem & knowledge** — `resolve_missing_nodes`, `search_node_packs`, `get_model_guidance`, `record_learning`
 
