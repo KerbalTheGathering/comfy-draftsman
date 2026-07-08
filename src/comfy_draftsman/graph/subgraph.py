@@ -44,11 +44,16 @@ def has_subgraph_instances(wf: Workflow) -> bool:
 
 def flatten(
     wf: Workflow, object_info: dict[str, Any]
-) -> tuple[Workflow, dict[int, dict[str, Any]]]:
+) -> tuple[Workflow, dict[int, dict[str, Any]], list[dict[str, Any]]]:
     """Expanded copy of ``wf`` with every active subgraph instance replaced by
     its inner nodes, plus provenance for reporting:
     {new node id: {"path": "104:90", "subgraph": name, "instance": 104}}
     ("path" uses the frontend's instanceId:innerId convention).
+
+    Returns a 3-tuple ``(flat, provenance, diagnostics)`` where *diagnostics*
+    records boundary links that were silently dropped during expansion (target
+    slot out of range, origin slot out of range, or output-side boundary
+    dangler with no inner producer).
 
     Nested subgraphs expand iteratively (an inner node whose type is another
     definition uuid becomes an instance in the next pass). Raises ValueError
@@ -57,6 +62,7 @@ def flatten(
     defs = wf.subgraph_defs()
     flat = Workflow.from_ui(wf.to_ui())
     provenance: dict[int, dict[str, Any]] = {}
+    diagnostics: list[dict[str, Any]] = []
     depth = 0
     while True:
         instances = [
@@ -68,9 +74,9 @@ def flatten(
         if depth >= MAX_DEPTH:
             raise ValueError(f"subgraphs nested deeper than {MAX_DEPTH} levels")
         for inst in instances:
-            _expand(flat, inst.id, defs[inst.type], object_info, provenance)
+            _expand(flat, inst.id, defs[inst.type], object_info, provenance, diagnostics)
         depth += 1
-    return flat, provenance
+    return flat, provenance, diagnostics
 
 
 def _expand(
@@ -79,6 +85,7 @@ def _expand(
     sg: dict[str, Any],
     object_info: dict[str, Any],
     provenance: dict[int, dict[str, Any]],
+    diagnostics: list[dict[str, Any]],
 ) -> None:
     inst = flat.nodes[inst_id]
     name = sg.get("name") or sg.get("id")
@@ -140,8 +147,25 @@ def _expand(
     ) -> None:
         origin = flat.nodes.get(origin_id)
         target = flat.nodes.get(target_id)
-        if origin is None or target is None or target_slot >= len(target.inputs):
+        if origin is None or target is None:
             return
+        if target_slot >= len(target.inputs):
+            diagnostics.append({
+                "subgraph": name,
+                "inner_node_id": target_id,
+                "input_slot": target_slot,
+                "reason": "target input slot does not exist",
+                "dropped_from": origin_id,
+            })
+            return
+        if origin_slot >= len(origin.outputs):
+            diagnostics.append({
+                "subgraph": name,
+                "inner_node_id": origin_id,
+                "output_slot": origin_slot,
+                "reason": "origin output slot does not exist",
+                "dropped_to": target_id,
+            })
         lid = flat._next_link_id
         flat._next_link_id += 1
         flat.links[lid] = Link(lid, origin_id, origin_slot, target_id, target_slot, ltype)
@@ -179,6 +203,12 @@ def _expand(
                 continue
             if producer is None:
                 # no inner producer for this boundary output: drop the dangler
+                diagnostics.append({
+                    "subgraph": name,
+                    "inner_node_id": ext.origin_id,
+                    "output_slot": ext.origin_slot,
+                    "reason": "boundary output has no connected producer in parent workflow",
+                })
                 flat.links.pop(lid, None)
                 tgt = flat.nodes.get(ext.target_id)
                 if (

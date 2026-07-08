@@ -93,15 +93,24 @@ them, so draftsman mirrors that expansion in `graph/subgraph.py`:
 - **Subgraph fixtures must be realistic:** minimal hand-built defs without
   boundary links or inner `inputs` arrays behave differently from real
   exports — `tests/fixtures/subgraph_real_template.json` is the reference.
+- **Subgraph edit ops** — editing subgraph definitions parses them into
+  Workflow objects internally; nested definitions (depth > 1) raise
+  NotImplementedError.
+- **proxyWidgets** — removing an inner node may invalidate instance
+  proxyWidgets overrides — a warning is returned in the op result.
+- **Image-metadata metadata** — `view_output` returns a `meta` dict alongside
+  images so text-only models can describe renders.
 
 ## Remaining TODOs
 
-- **PyPI publish** — sdist/wheel build and content-audit are done; publishing
-  awaits credentials or GitHub Actions trusted publishing.
-- **Edit inside subgraph definitions** — flattening covers run/validate/export;
-  targeted edits of definition internals are unimplemented (rebuild flat).
-- **`step` constraint on INT/FLOAT widgets** — neither surfaced by
-  `get_node_info` nor enforced by validation.
-- Inner nodes of a subgraph definition that omit `inputs` arrays can't have
-  boundary links re-attached (real exports always include them; a synthetic
-  fallback would guess wrong API input names).
+- **[DONE] Edit inside subgraph definitions** — flattening covers
+  run/validate/export; targeted edits of definition internals are implemented
+  (parsed into Workflow objects internally). Nested definitions (depth > 1)
+  raise NotImplementedError.
+- **[DONE] `step` constraint on INT/FLOAT widgets** — surfaced by
+  `get_node_info` and enforced by validation during set_widget/add_node ops.
+- **[DIAGNOSTIC ADDED] Inner nodes omitting `inputs` arrays** — lint checker
+  detects missing `inputs` arrays on subgraph definition inner nodes and
+  reports them as a diagnostic (with the node id and definition uuid); a
+  synthetic fallback would still guess wrong, so this is surfaced rather than
+  silently fixed.

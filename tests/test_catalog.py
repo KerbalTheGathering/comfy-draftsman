@@ -95,3 +95,23 @@ def test_node_summary_dynamic_combo_default_from_first_option(object_info):
     # no explicit top-level default -> first option key
     assert mode["default"] == "mono"
     assert mode["choices"] == ["mono", "multiview"]
+
+
+
+
+def test_node_summary_surfaces_step_for_int_widgets(object_info):
+
+    ks = node_summary(object_info, "KSampler")
+
+    steps = next(i for i in ks["inputs"] if i["name"] == "steps")
+
+    assert "step" in steps
+
+    assert isinstance(steps["step"], (int, float))
+
+    clip = node_summary(object_info, "CLIPTextEncode")
+
+    text = next(i for i in clip["inputs"] if i["name"] == "text")
+
+    assert "step" not in text
+

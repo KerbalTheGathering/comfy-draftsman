@@ -235,7 +235,7 @@ class ComfyClient:
         return f"{scheme}://{host}/ws?clientId={client_id or self.client_id}"
 
     async def run_and_wait(
-        self, api_prompt: dict[str, Any], timeout: float = 600.0
+        self, api_prompt: dict[str, Any], timeout: float = 600.0, extra_data: dict[str, Any] | None = None
     ) -> dict[str, Any]:
         """Queue a prompt and wait for completion via the /ws event stream.
 
@@ -243,7 +243,7 @@ class ComfyClient:
         history), "error"?}.
         """
         async with websockets.connect(self._ws_url(), max_size=32 * 1024 * 1024) as ws:
-            queued = await self.queue_prompt(api_prompt)
+            queued = await self.queue_prompt(api_prompt, extra_data=extra_data)
             prompt_id = queued["prompt_id"]
             error: dict[str, Any] | None = None
             async with asyncio.timeout(timeout):

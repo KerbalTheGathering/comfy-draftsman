@@ -1,6 +1,9 @@
 """save_workflow must never overwrite an existing workflow file by default."""
 
+import io
+
 import pytest
+from PIL import Image as PILImage
 
 from comfy_draftsman import server
 from comfy_draftsman.graph.model import Workflow
@@ -60,3 +63,67 @@ async def test_save_overwrite_true_replaces(wired):
     assert result["saved"] is True
     assert client.saved == ["menu.json"]
     assert result["renamed_from"] is None
+
+
+class FakeViewClient:
+    """Mimics ComfyClient's fetch_output for view_output testing."""
+
+    def __init__(self, image_bytes: bytes | None = None):
+        self.image_bytes = image_bytes or _make_test_png()
+
+    async def fetch_output(self, ref: dict) -> bytes:
+        return self.image_bytes
+
+
+def _make_test_png(width: int = 320, height: int = 200) -> bytes:
+    """Create a small PNG for testing view_output."""
+    img = PILImage.new("RGB", (width, height), color="red")
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+@pytest.fixture
+def view_wired(config, monkeypatch):
+    """Wire up a FakeViewClient for view_output tests."""
+    client = FakeViewClient()
+    monkeypatch.setattr(server._State, "config", config)
+    monkeypatch.setattr(server._State, "client", client)
+    return client
+
+
+async def test_view_output_returns_meta(view_wired):
+    """view_output returns a meta dict with image dimensions and ref info."""
+    result = await server.view_output("test.png")
+    assert "meta" in result, "meta key must be present"
+    assert "image" in result, "image key must be present for vision models"
+    meta = result["meta"]
+    assert meta["filename"] == "test.png"
+    assert meta["width"] == 320
+    assert meta["height"] == 200
+    assert meta["format"] == "png"
+    assert meta["subfolder"] == ""
+    assert meta["type"] == "output"
+
+
+async def test_view_output_meta_with_custom_ref(view_wired):
+    """view_output meta reflects the passed filename, subfolder, and type."""
+    result = await server.view_output("result.png", subfolder="sub", type="temp")
+    meta = result["meta"]
+    assert meta["filename"] == "result.png"
+    assert meta["subfolder"] == "sub"
+    assert meta["type"] == "temp"
+
+
+
+
+async def test_view_output_error_on_fetch_failure(config, monkeypatch):
+    """Fetch failure returns error, no meta."""
+    class FailingClient:
+        async def fetch_output(self, ref):
+            raise RuntimeError("connection refused")
+    monkeypatch.setattr(server._State, "config", config)
+    monkeypatch.setattr(server._State, "client", FailingClient())
+    result = await server.view_output("broken.png")
+    assert "error" in result
+    assert "meta" not in result

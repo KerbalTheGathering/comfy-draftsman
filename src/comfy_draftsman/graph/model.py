@@ -456,6 +456,82 @@ class Workflow:
             if isinstance(sg, dict) and sg.get("id")
         }
 
+    def subgraph_as_workflow(self, def_id: str) -> Workflow:
+        """Extract one subgraph definition as a standalone Workflow.
+
+        The returned Workflow contains the definition's inner nodes and links,
+        suitable for editing with the normal graph operations. Definition
+        metadata (name, inputs, outputs) is preserved on the Workflow object
+        as ``_subgraph_meta`` and restored by :meth:`update_subgraph`.
+
+        Raises:
+            KeyError: if def_id is not in the definitions.
+            NotImplementedError: if the definition contains nested subgraph
+                instance nodes (editing those is not supported yet).
+        """
+        defs = self.subgraph_defs()
+        if def_id not in defs:
+            raise KeyError(f"no subgraph definition with id {def_id!r}")
+        definition = defs[def_id]
+
+        # check for nested subgraph instances inside this definition
+        known_def_ids = set(defs.keys())
+        for node in definition.get("nodes", []):
+            ntype = node.get("type", "")
+            if ntype.startswith("subgraph.") or ntype in known_def_ids:
+                raise NotImplementedError(
+                    "editing nested subgraph definitions is not supported yet"
+                )
+
+        # build a minimal UI-format document and parse it via from_ui
+        nodes = definition.get("nodes", [])
+        links = definition.get("links", [])
+        max_nid = max((n.get("id", 0) for n in nodes), default=0)
+        max_lid = 0
+        for ln in links:
+            if isinstance(ln, dict):
+                max_lid = max(max_lid, ln.get("id", 0))
+            elif isinstance(ln, (list, tuple)) and ln:
+                max_lid = max(max_lid, ln[0])
+        ui_doc = {
+            "last_node_id": max_nid,
+            "last_link_id": max_lid,
+            "nodes": nodes,
+            "links": links,
+            "groups": [],
+            "config": {},
+            "extra": {},
+            "version": 0.4,
+        }
+        wf = Workflow.from_ui(ui_doc)
+        # attach definition metadata so update_subgraph can restore it
+        wf._subgraph_meta = {
+            "name": definition.get("name", ""),
+            "inputs": definition.get("inputs", []),
+            "outputs": definition.get("outputs", []),
+        }
+        return wf
+
+    def update_subgraph(self, def_id: str, wf: Workflow) -> None:
+        """Write an edited Workflow back into a subgraph definition.
+
+        Updates the definition's nodes and links from the serialized form of
+        ``wf``. Definition metadata (name, inputs, outputs) is preserved.
+
+        Raises:
+            KeyError: if def_id is not in the definitions.
+        """
+        defs = self.subgraph_defs()
+        if def_id not in defs:
+            raise KeyError(f"no subgraph definition with id {def_id!r}")
+
+        ui = wf.to_ui()
+        definition = defs[def_id]
+        definition["nodes"] = ui["nodes"]
+        definition["links"] = ui["links"]
+        # preserve existing name, inputs, outputs — do not overwrite
+
+
     # --- serialization ---
 
     def to_ui(self) -> dict[str, Any]:
@@ -531,7 +607,7 @@ class Workflow:
         from .subgraph import flatten, has_subgraph_instances
 
         if has_subgraph_instances(self):
-            flat, _ = flatten(self, object_info)
+            flat, _, _ = flatten(self, object_info)
             return flat.to_api(object_info)
         resolved = self._resolve_link_origins()
         primitive_values = {

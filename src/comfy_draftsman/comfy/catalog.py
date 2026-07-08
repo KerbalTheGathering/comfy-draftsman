@@ -199,7 +199,7 @@ def node_summary(
                 }
             else:
                 entry["type"] = str(kind)
-            for key in ("default", "min", "max", "tooltip", "control_after_generate"):
+            for key in ("default", "min", "max", "tooltip", "control_after_generate", "step"):
                 if key in opts:
                     entry[key] = opts[key]
             if isinstance(entry.get("tooltip"), str) and len(entry["tooltip"]) > MAX_TOOLTIP_CHARS:

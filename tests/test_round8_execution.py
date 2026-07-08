@@ -37,30 +37,83 @@ def _png_bytes(width: int, height: int, mode: str = "RGB") -> bytes:
 
 
 def test_downscale_resizes_and_jpegs_opaque():
-    data, fmt = downscale_image(_png_bytes(2000, 1000), 768)
+    data, fmt, width, height = downscale_image(_png_bytes(2000, 1000), 768)
+    assert fmt == "jpeg"
+    img = PILImage.open(io.BytesIO(data))
+    assert max(img.size) == 768
+    assert width == 768
+    assert height == 384
+    data, fmt, width, height = downscale_image(_png_bytes(2000, 1000), 768)
+    assert fmt == "jpeg"
+    img = PILImage.open(io.BytesIO(data))
+    assert max(img.size) == 768
+    assert width == 768
+    assert height == 384
+    data, fmt, width, height = downscale_image(_png_bytes(2000, 1000), 768)
+    assert fmt == "jpeg"
+    img = PILImage.open(io.BytesIO(data))
+    assert max(img.size) == 768
+    assert width == 768
+    assert height == 384
+    data, fmt, width, height = downscale_image(_png_bytes(2000, 1000), 768)
     assert fmt == "jpeg"
     img = PILImage.open(io.BytesIO(data))
     assert max(img.size) == 768
 
 
 def test_downscale_keeps_alpha_as_png():
-    data, fmt = downscale_image(_png_bytes(2000, 1000, mode="RGBA"), 768)
+    data, fmt, width, height = downscale_image(_png_bytes(2000, 1000, mode="RGBA"), 768)
+    assert fmt == "png"
+    assert PILImage.open(io.BytesIO(data)).mode == "RGBA"
+    assert width == 768
+    assert height == 384
+    data, fmt, width, height = downscale_image(_png_bytes(2000, 1000, mode="RGBA"), 768)
+    assert fmt == "png"
+    assert PILImage.open(io.BytesIO(data)).mode == "RGBA"
+    assert width == 768
+    assert height == 384
+    data, fmt, width, height = downscale_image(_png_bytes(2000, 1000, mode="RGBA"), 768)
+    assert fmt == "png"
+    assert PILImage.open(io.BytesIO(data)).mode == "RGBA"
+    assert width == 768
+    assert height == 384
+    data, fmt, width, height = downscale_image(_png_bytes(2000, 1000, mode="RGBA"), 768)
     assert fmt == "png"
     assert PILImage.open(io.BytesIO(data)).mode == "RGBA"
 
 
 def test_small_image_passes_through_untouched():
     original = _png_bytes(100, 80)
-    data, fmt = downscale_image(original, 768)
+    data, fmt, width, height = downscale_image(original, 768)
+    assert data == original
+    assert fmt == "png"
+    assert width == 100
+    assert height == 80
+    original = _png_bytes(100, 80)
+    data, fmt, width, height = downscale_image(original, 768)
+    assert data == original
+    assert fmt == "png"
+    assert width == 100
+    assert height == 80
+    original = _png_bytes(100, 80)
+    data, fmt, width, height = downscale_image(original, 768)
+    assert data == original
+    assert fmt == "png"
+    assert width == 100
+    assert height == 80
+    original = _png_bytes(100, 80)
+    data, fmt, width, height = downscale_image(original, 768)
     assert data == original
     assert fmt == "png"
 
 
 def test_max_dim_none_keeps_full_resolution():
-    data, fmt = downscale_image(_png_bytes(2000, 1000), None)
+    data, fmt, width, height = downscale_image(_png_bytes(2000, 1000), None)
     assert PILImage.open(io.BytesIO(data)).size == (2000, 1000)
     # 2000px flat-color PNG is small, so it passes through as-is
     assert fmt == "png"
+    assert width == 2000
+    assert height == 1000
 
 
 def test_large_opaque_png_reencodes_to_jpeg_without_resize():
@@ -74,7 +127,23 @@ def test_large_opaque_png_reencodes_to_jpeg_without_resize():
     img.save(buf, format="PNG")
     original = buf.getvalue()
     assert len(original) > 256 * 1024  # noise PNG compresses badly
-    data, fmt = downscale_image(original, 768)  # no resize needed
+    data, fmt, width, height = downscale_image(original, 768)  # no resize needed
+    assert fmt == "jpeg"
+    assert len(data) < len(original) // 2  # noise is JPEG's worst case; real renders do far better
+    assert PILImage.open(io.BytesIO(data)).size == (700, 700)
+    assert width == 700
+    assert height == 700
+    data, fmt, width, height = downscale_image(original, 768)  # no resize needed
+    assert fmt == "jpeg"
+    assert len(data) < len(original) // 2  # noise is JPEG's worst case; real renders do far better
+    assert PILImage.open(io.BytesIO(data)).size == (700, 700)
+    assert width == 700
+    assert height == 700
+    assert fmt == "jpeg"
+    assert len(data) < len(original) // 2  # noise is JPEG's worst case; real renders do far better
+    assert PILImage.open(io.BytesIO(data)).size == (700, 700)
+    assert width == 700
+    assert height == 700
     assert fmt == "jpeg"
     assert len(data) < len(original) // 2  # noise is JPEG's worst case; real renders do far better
     assert PILImage.open(io.BytesIO(data)).size == (700, 700)
@@ -111,9 +180,11 @@ class RunClient:
 
     async def queue_prompt(self, api, extra_data=None, client_id=None):
         self.queued_with = client_id
+        self.queued_extra_data = extra_data
         return {"prompt_id": "p123"}
 
-    async def run_and_wait(self, api, timeout=600.0):
+    async def run_and_wait(self, api, timeout=600.0, extra_data=None):
+        self.run_extra_data = extra_data
         return {
             "status": "success",
             "prompt_id": "p123",
@@ -180,6 +251,33 @@ async def test_run_workflow_skips_preview_on_undecodable_output(wired):
     assert result["status"] == "success"
 
 
+async def test_run_workflow_injects_comfy_api_key_when_set(monkeypatch, wired):
+    monkeypatch.setattr(server, "_COMFY_API_KEY", "secret-key")
+    client, wf_id = wired
+    result = await server.run_workflow(wf_id, wait=False)
+    assert result == {"status": "queued", "prompt_id": "p123"}
+    assert client.queued_extra_data == {"api_key_comfy_org": "secret-key"}
+
+
+async def test_run_workflow_wait_injects_comfy_api_key_when_set(monkeypatch, wired):
+    monkeypatch.setattr(server, "_COMFY_API_KEY", "secret-key")
+    client, wf_id = wired
+    result = await server.run_workflow(wf_id, return_preview=False)
+    assert result["status"] == "success"
+    assert client.run_extra_data == {"api_key_comfy_org": "secret-key"}
+
+
+async def test_run_workflow_no_extra_data_without_api_key(wired):
+    client, wf_id = wired
+    await server.run_workflow(wf_id, wait=False)
+    assert client.queued_extra_data is None
+    client, wf_id = wired
+    client.output_bytes = b"mp4-ish junk"
+    result = await server.run_workflow(wf_id)
+    assert isinstance(result, dict)  # refs only, no inline image
+    assert result["status"] == "success"
+
+
 # --- view_output ---
 
 
@@ -190,14 +288,40 @@ async def test_view_output_rejects_traversal(wired):
 
 async def test_view_output_downscales_by_default(wired):
     result = await server.view_output("out_00001_.png")
-    assert isinstance(result, Image)
-    assert max(PILImage.open(io.BytesIO(result.data)).size) == 1024
+    image = result["image"]
+    assert isinstance(image, Image)
+    assert max(PILImage.open(io.BytesIO(image.data)).size) == 1024
+    result = await server.view_output("out_00001_.png")
+    image = result["image"]
+    assert isinstance(image, Image)
+    assert max(PILImage.open(io.BytesIO(image.data)).size) == 1024
+    result = await server.view_output("out_00001_.png")
+    image = result["image"]
+    assert isinstance(image, Image)
+    assert max(PILImage.open(io.BytesIO(image.data)).size) == 1024
+    result = await server.view_output("out_00001_.png")
+    image = result["image"]
+    assert isinstance(image, Image)
+    assert max(PILImage.open(io.BytesIO(image.data)).size) == 1024
 
 
 async def test_view_output_full_size(wired):
     client, _ = wired
     result = await server.view_output("out_00001_.png", max_dim=None)
-    assert result.data == client.output_bytes
+    image = result["image"]
+    assert image.data == client.output_bytes
+    client, _ = wired
+    result = await server.view_output("out_00001_.png", max_dim=None)
+    image = result["image"]
+    assert image.data == client.output_bytes
+    client, _ = wired
+    result = await server.view_output("out_00001_.png", max_dim=None)
+    image = result["image"]
+    assert image.data == client.output_bytes
+    client, _ = wired
+    result = await server.view_output("out_00001_.png", max_dim=None)
+    image = result["image"]
+    assert image.data == client.output_bytes
 
 
 async def test_view_output_non_image_errors_cleanly(wired):

@@ -21,7 +21,7 @@ JPEG_QUALITY = 85
 REENCODE_THRESHOLD = 256 * 1024
 
 
-def downscale_image(data: bytes, max_dim: int | None) -> tuple[bytes, str]:
+def downscale_image(data: bytes, max_dim: int | None) -> tuple[bytes, str, int, int]:
     """Return (bytes, format) fit for MCP image content, thumbnailed to max_dim.
 
     max_dim None/0 means full RESOLUTION (an oversized opaque PNG still
@@ -43,14 +43,14 @@ def downscale_image(data: bytes, max_dim: int | None) -> tuple[bytes, str]:
         and src_format in _PASSTHROUGH_FORMATS
         and (src_format in _ALREADY_LOSSY or has_alpha or len(data) <= REENCODE_THRESHOLD)
     ):
-        return data, src_format
+        return data, src_format, img.width, img.height
     if needs_resize:
         img.thumbnail((max_dim, max_dim), PILImage.Resampling.LANCZOS)
     buf = io.BytesIO()
     if has_alpha:
         img.save(buf, format="PNG")
-        return buf.getvalue(), "png"
+        return buf.getvalue(), "png", img.width, img.height
     if img.mode not in ("RGB", "L"):
         img = img.convert("RGB")
     img.save(buf, format="JPEG", quality=JPEG_QUALITY)
-    return buf.getvalue(), "jpeg"
+    return buf.getvalue(), "jpeg", img.width, img.height

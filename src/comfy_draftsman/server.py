@@ -10,6 +10,7 @@ from __future__ import annotations
 import base64
 import difflib
 import json
+import os
 from pathlib import Path
 from typing import Any, Literal
 
@@ -30,7 +31,7 @@ from .graph.lint import lint
 from .graph.model import NOTE_TYPES, VIRTUAL_TYPES, Workflow
 from .graph.port import port_workflow as port_engine
 from .graph.validate import check_widget_value, validate
-from .graph.widgets import all_slot_names
+from .graph.widgets import SYNTHETIC_SUFFIXES, all_slot_names
 from .imaging import downscale_image
 from .session import Session
 
@@ -41,6 +42,13 @@ from .session import Session
 _READ_INSTANCE = ToolAnnotations(readOnlyHint=True, openWorldHint=True, idempotentHint=True)
 _READ_LOCAL = ToolAnnotations(readOnlyHint=True, openWorldHint=False, idempotentHint=True)
 _EDIT_LOCAL = ToolAnnotations(readOnlyHint=False, openWorldHint=False, destructiveHint=False)
+_WRITE_INSTANCE = ToolAnnotations(readOnlyHint=False, openWorldHint=True, destructiveHint=False)
+_DESTRUCTIVE_INSTANCE = ToolAnnotations(readOnlyHint=False, openWorldHint=True, destructiveHint=True)
+
+# Comfy Org API key for partner/* nodes (Luma, Seedance, Kling, Runway).
+# The frontend normally injects this into the prompt payload's extra_data;
+# without it, headless MCP queues fail with "Unauthorized" on partner nodes.
+_COMFY_API_KEY = os.environ.get("COMFY_API_KEY", "")
 _WRITE_INSTANCE = ToolAnnotations(readOnlyHint=False, openWorldHint=True, destructiveHint=False)
 _DESTRUCTIVE_INSTANCE = ToolAnnotations(readOnlyHint=False, openWorldHint=True, destructiveHint=True)
 
@@ -464,6 +472,21 @@ _OP_SPECS: dict[str, tuple[set[str], set[str]]] = {
     "set_widget": ({"node_id", "input", "value"}, {"force"}),
     "set_title": ({"node_id", "title"}, set()),
     "set_mode": ({"node_id", "mode"}, set()),
+    "add_node_to_definition": (
+        {"definition_id", "class_type"},
+        {"title", "widgets", "force"},
+    ),
+    "connect_in_definition": (
+        {"definition_id", "from_node", "from_output", "to_node", "to_input"},
+        set(),
+    ),
+    "remove_node_from_definition": ({"definition_id", "node_id"}, set()),
+    "set_title_in_definition": ({"definition_id", "node_id", "title"}, set()),
+    "set_mode_in_definition": ({"definition_id", "node_id", "mode"}, set()),
+    "set_widget_in_definition": (
+        {"definition_id", "node_id", "input", "value"},
+        {"force"},
+    ),
 }
 
 
@@ -505,6 +528,13 @@ async def edit_workflow(
     - {"op": "set_widget", "node_id": int, "input": str, "value": any}
     - {"op": "set_title", "node_id": int, "title": str}
     - {"op": "set_mode", "node_id": int, "mode": int}  # 0 normal, 2 mute, 4 bypass
+    - {"op": "connect_in_definition", "definition_id": str, "from_node": int, "from_output": str|int, "to_node": int, "to_input": str}
+    - {"op": "add_node_to_definition", "definition_id": str, "class_type": str, "title"?: str, "widgets"?: {name: value}, "force"?: bool}
+    - {"op": "remove_node_from_definition", "definition_id": str, "node_id": int}
+    - {"op": "set_title_in_definition", "definition_id": str, "node_id": int, "title": str}
+    - {"op": "set_mode_in_definition", "definition_id": str, "node_id": int, "mode": int}
+    - {"op": "set_widget_in_definition", "definition_id": str, "node_id": int, "input": str, "value": any, "force"?: bool}
+
 
     Output slot names and widget names come from get_node_info. Annotation nodes
     (class_type "Note" or "MarkdownNote") are supported with a single widget
@@ -613,6 +643,156 @@ async def edit_workflow(
                 wf.nodes[int(op["node_id"])].mode = int(op["mode"])
                 touched.add(int(op["node_id"]))
                 applied.append(f"mode #{op['node_id']} = {op['mode']}")
+            elif kind == "add_node_to_definition":
+                definition_id = op["definition_id"]
+                class_type = op["class_type"]
+                widgets = op.get("widgets") or {}
+                inner = wf.subgraph_as_workflow(definition_id)
+                if class_type in NOTE_TYPES:
+                    if bad := sorted(set(widgets) - {"text"}):
+                        raise ValueError(
+                            f"{class_type} has a single widget 'text'; got {bad}"
+                        )
+                elif class_type not in object_info:
+                    raise ValueError(
+                        f"unknown node class {class_type!r} - not installed on this "
+                        "instance; definition unchanged"
+                    )
+                else:
+                    slots = all_slot_names(class_type, object_info)
+                    if bad := sorted(set(widgets) - set(slots)):
+                        raise ValueError(
+                            f"{class_type} has no widget(s) {bad}; widgets: {slots}; "
+                            "definition unchanged"
+                        )
+                    if not op.get("force"):
+                        for name, value in widgets.items():
+                            problem = check_widget_value(
+                                class_type, name, value, object_info
+                            )
+                            if problem:
+                                raise ValueError(
+                                    f"{class_type}: {problem}; definition unchanged"
+                                )
+                new_node = inner.add_node(
+                    class_type,
+                    object_info=object_info,
+                    title=op.get("title"),
+                )
+                for name, value in widgets.items():
+                    inner.set_widget(new_node.id, name, value, object_info)
+                wf.update_subgraph(definition_id, inner)
+                touched.add(new_node.id)
+                applied.append(
+                    f"added {class_type} as #{new_node.id} in definition {definition_id}"
+                )
+            elif kind == "connect_in_definition":
+                definition_id = op["definition_id"]
+                from_node = int(op["from_node"])
+                from_output = op["from_output"]
+                to_node = int(op["to_node"])
+                to_input = op["to_input"]
+                if from_node in (-10, -20) or to_node in (-10, -20):
+                    raise ValueError(
+                        "cannot connect to boundary pseudo-nodes (-10/-20) directly"
+                    )
+                if isinstance(from_output, str) and from_output.isdigit():
+                    from_output = int(from_output)
+                inner = wf.subgraph_as_workflow(definition_id)
+                replaced = ""
+                target = inner.nodes.get(to_node)
+                if target is not None:
+                    slot = target.input_by_name(to_input)
+                    if slot is not None and slot.link is not None:
+                        old = inner.links.get(slot.link)
+                        if old is not None:
+                            replaced = (
+                                f" (replaced existing link from "
+                                f"#{old.origin_id}[{old.origin_slot}])"
+                            )
+                inner.connect(
+                    from_node, from_output, to_node, to_input, object_info,
+                )
+                wf.update_subgraph(definition_id, inner)
+                applied.append(
+                    f"connected #{from_node}.{from_output} -> "
+                    f"#{to_node}.{to_input} in definition {definition_id}{replaced}"
+                )
+
+            elif kind == "remove_node_from_definition":
+                def_id = op["definition_id"]
+                inner_nid = int(op["node_id"])
+                inner_wf = wf.subgraph_as_workflow(def_id)
+                inner_wf.remove_node(inner_nid)
+                wf.update_subgraph(def_id, inner_wf)
+                warnings = []
+                for node in wf.nodes.values():
+                    if node.type != def_id:
+                        continue
+                    proxy = (node.properties or {}).get("proxyWidgets") or {}
+                    found = False
+                    if isinstance(proxy, dict):
+                        found = str(inner_nid) in proxy or inner_nid in proxy
+                    elif isinstance(proxy, list):
+                        found = any(
+                            isinstance(p, (list, tuple)) and len(p) >= 1
+                            and str(p[0]) == str(inner_nid)
+                            for p in proxy
+                        )
+                    if found:
+                        warnings.append(
+                            f"removed inner node #{inner_nid} but instance "
+                            f"#{node.id} has proxyWidgets for it; those widget "
+                            f"overrides will be dropped during flatten"
+                        )
+                result_msg = f"remove_node_from_definition: removed #{inner_nid} from definition {def_id}"
+                if warnings:
+                    result_msg += f"; warnings: {'; '.join(warnings)}"
+                applied.append(result_msg)
+            elif kind == "set_title_in_definition":
+                def_id = op["definition_id"]
+                inner_nid = int(op["node_id"])
+                inner_wf = wf.subgraph_as_workflow(def_id)
+                inner_wf.nodes[inner_nid].title = op["title"]
+                wf.update_subgraph(def_id, inner_wf)
+                applied.append(f"set_title_in_definition: titled #{inner_nid} in definition {def_id}")
+            elif kind == "set_mode_in_definition":
+                def_id = op["definition_id"]
+                inner_nid = int(op["node_id"])
+                inner_wf = wf.subgraph_as_workflow(def_id)
+                inner_wf.nodes[inner_nid].mode = int(op["mode"])
+                wf.update_subgraph(def_id, inner_wf)
+                applied.append(
+                    f"set_mode_in_definition: mode #{inner_nid} = {op['mode']} in definition {def_id}"
+                )
+            elif kind == "set_widget_in_definition":
+                def_id = op["definition_id"]
+                inner_nid = int(op["node_id"])
+                input_name = op["input"]
+                value = op["value"]
+                if any(input_name.endswith(s) for s in SYNTHETIC_SUFFIXES):
+                    raise ValueError(
+                        f"cannot set synthetic control slot '{input_name}' on "
+                        "definition-internal node"
+                    )
+                inner_wf = wf.subgraph_as_workflow(def_id)
+                inner_node = inner_wf.nodes[inner_nid]
+                if not op.get("force") and inner_node.type not in NOTE_TYPES:
+                    problem = check_widget_value(
+                        inner_node.type, input_name, value, object_info,
+                        inner_node.widgets_values,
+                    )
+                    if problem:
+                        raise ValueError(
+                            f"{inner_node.type} #{inner_nid} in definition "
+                            f"{def_id}: {problem}"
+                        )
+                inner_wf.set_widget(inner_nid, input_name, value, object_info)
+                wf.update_subgraph(def_id, inner_wf)
+                touched.add(inner_nid)
+                applied.append(
+                    f"set_widget_in_definition: set #{inner_nid}.{input_name} = {value!r} in definition {def_id}"
+                )
     except KeyError as e:
         return {
             "applied": applied,
@@ -797,16 +977,19 @@ async def run_workflow(
             return {"status": "invalid", "error": dest_error}
     elif wait and _config().mount_dir is not None:
         dest_root, mount_error = _resolve_dest("")  # resolves + creates the mount dir
+    extra_data: dict[str, Any] | None = None
+    if _COMFY_API_KEY:
+        extra_data = {"api_key_comfy_org": _COMFY_API_KEY}
     if not wait:
         tracker = _tracker()
         tracker.ensure_running()
         try:
-            queued = await _client().queue_prompt(api, client_id=tracker.client_id)
+            queued = await _client().queue_prompt(api, extra_data=extra_data, client_id=tracker.client_id)
         except ComfyValidationError as e:
             return {"status": "rejected", "error": str(e), "node_errors": e.node_errors}
         return {"status": "queued", "prompt_id": queued["prompt_id"]}
     try:
-        result = await _client().run_and_wait(api, timeout=timeout_seconds)
+        result = await _client().run_and_wait(api, timeout=timeout_seconds, extra_data=extra_data)
     except ComfyValidationError as e:
         return {"status": "rejected", "error": str(e), "node_errors": e.node_errors}
     if dest_root is not None and result["status"] == "success":
@@ -826,7 +1009,7 @@ async def run_workflow(
         if image_items:
             data = await _client().fetch_output(image_items[0])
             try:
-                thumb, fmt = downscale_image(data, PREVIEW_MAX_DIM)
+                thumb, fmt, _, _ = downscale_image(data, PREVIEW_MAX_DIM)
             except ValueError:
                 return result  # first "image" output isn't decodable; refs still returned
             result["preview"] = (
@@ -858,10 +1041,20 @@ async def view_output(
     except Exception as e:
         return {"error": f"could not fetch {filename!r}: {e}"}
     try:
-        data, fmt = downscale_image(data, max_dim)
+        data, fmt, width, height = downscale_image(data, max_dim)
     except ValueError as e:
         return {"error": str(e), "hint": "only image outputs can be viewed inline"}
-    return Image(data=data, format=fmt)
+    return {
+        "image": Image(data=data, format=fmt),
+        "meta": {
+            "filename": filename,
+            "width": width,
+            "height": height,
+            "format": fmt,
+            "subfolder": subfolder,
+            "type": type,
+        },
+    }
 
 
 def _resolve_dest(dest_dir: str) -> tuple[Path | None, str | None]:

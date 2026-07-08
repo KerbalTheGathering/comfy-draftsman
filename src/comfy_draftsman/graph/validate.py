@@ -94,6 +94,12 @@ def check_widget_value(
         low, high = opts.get("min"), opts.get("max")
         if (low is not None and value < low) or (high is not None and value > high):
             return f"'{input_name}' = {value} is outside the allowed range [{low}, {high}]"
+        step = opts.get("step")
+        if step is not None and step > 0:
+            min_val = opts.get("min", 0) or 0
+            remainder = (value - min_val) % step
+            if not (remainder < 1e-6 or abs(remainder - step) < 1e-6):
+                return f"'{input_name}' = {value} is not aligned to step {step} (min {min_val})"
     return None
 
 
@@ -105,7 +111,7 @@ def validate(wf: Workflow, object_info: dict[str, Any]) -> list[dict[str, Any]]:
     if not has_subgraph_instances(wf):
         return _validate_nodes(wf, object_info)
     try:
-        flat, provenance = flatten(wf, object_info)
+        flat, provenance, diagnostics = flatten(wf, object_info)
     except ValueError as e:
         findings = _validate_nodes(wf, object_info)
         findings.append(
@@ -117,6 +123,18 @@ def validate(wf: Workflow, object_info: dict[str, Any]) -> list[dict[str, Any]]:
         )
         return findings
     findings = _validate_nodes(flat, object_info)
+    for d in diagnostics:
+        findings.append(
+            _finding(
+                "warning",
+                "subgraph-missing-inner-inputs",
+                f"subgraph '{d['subgraph']}': inner node #{d.get('inner_node_id', '?')} "
+                f"dropped boundary link ({d.get('reason', 'unknown')}); "
+                "the node may be missing its inputs/outputs arrays",
+                d.get("inner_node_id"),
+                subgraph=d.get("subgraph"),
+            )
+        )
     for f in findings:
         origin = provenance.get(f.get("node_id", -1))
         if origin:
@@ -274,6 +292,21 @@ def _validate_nodes(wf: Workflow, object_info: dict[str, Any]) -> list[dict[str,
                             input=name,
                         )
                     )
+                step = opts.get("step")
+                if step is not None and step > 0:
+                    min_val = opts.get("min", 0) or 0
+                    remainder = (value - min_val) % step
+                    if not (remainder < 1e-6 or abs(remainder - step) < 1e-6):
+                        findings.append(
+                            _finding(
+                                "warning",
+                                "step-misaligned",
+                                f"{node.type} #{node.id}: '{name}' = {value} is not aligned to step "
+                                f"{step} (min {min_val})",
+                                node.id,
+                                input=name,
+                            )
+                        )
 
         for name, spec in schema.get("input", {}).get("required", {}).items():
             if w.is_widget_input(spec):

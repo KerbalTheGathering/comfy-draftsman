@@ -81,6 +81,8 @@ Then just ask your agent things like:
 | `DRAFTSMAN_LEARNED_DIR` | `~/.comfy-draftsman/learned` | Persistent learned model knowledge |
 | `COMFYUI_MOUNT_DIR` | _(unset)_ | Folder a sandboxed client can reach; `save_output` (and `run_workflow`'s auto-relocate) copy finished renders here out of ComfyUI's `output/` tree |
 | `DRAFTSMAN_TIMEOUT` | `30` | HTTP timeout (seconds) |
+| `COMFY_API_KEY` | _(unset)_ | Comfy Org API key for partner/* nodes (Luma, Seedance, Kling, Runway); injected into the prompt payload's `extra_data` so headless queues authenticate |
+
 
 ### Reducing permission prompts
 

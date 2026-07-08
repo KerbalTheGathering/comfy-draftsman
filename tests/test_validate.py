@@ -133,3 +133,36 @@ def test_null_widget_value_is_error(object_info):
     findings = validate(wf, object_info)
     nulls = [f for f in findings if f["code"] == "null-widget-value"]
     assert nulls and nulls[0]["level"] == "error" and nulls[0]["node_id"] == node.id
+
+
+
+def test_step_aligned_value_passes(object_info):
+    wf = Workflow.new()
+    sampler = wf.add_node("KSampler", object_info=object_info)
+    wf.set_widget(sampler.id, "steps", 20, object_info)
+    findings = validate(wf, object_info)
+    assert not any(f["code"] == "step-misaligned" for f in findings)
+
+
+def test_step_misaligned_value_fails(object_info):
+    wf = Workflow.new()
+    sampler = wf.add_node("KSampler", object_info=object_info)
+    wf.set_widget(sampler.id, "cfg", 1.23, object_info)
+    findings = validate(wf, object_info)
+    assert any(f["code"] == "step-misaligned" for f in findings)
+
+
+def test_step_float_tolerance_passes(object_info):
+    wf = Workflow.new()
+    sampler = wf.add_node("KSampler", object_info=object_info)
+    wf.set_widget(sampler.id, "cfg", 1.0, object_info)
+    findings = validate(wf, object_info)
+    assert not any(f["code"] == "step-misaligned" for f in findings)
+
+
+def test_step_absent_no_flag(object_info):
+    wf = Workflow.new()
+    sampler = wf.add_node("KSampler", object_info=object_info)
+    wf.set_widget(sampler.id, "seed", 42, object_info)
+    findings = validate(wf, object_info)
+    assert not any(f["code"] == "step-misaligned" for f in findings)

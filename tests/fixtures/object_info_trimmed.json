@@ -24,7 +24,8 @@
       "default": 20,
       "min": 1,
       "max": 10000,
-      "tooltip": "The number of steps used in the denoising process."
+      "tooltip": "The number of steps used in the denoising process.",
+      "step": 1
      }
     ],
     "cfg": [
